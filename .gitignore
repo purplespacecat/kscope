@@ -4,3 +4,11 @@
 vendor/
 .env
 kubeconfig
+
+# Runtime data
+/data/
+
+# Frontend build artifacts
+/web/node_modules/
+/web/dist/*
+!/web/dist/.gitkeep

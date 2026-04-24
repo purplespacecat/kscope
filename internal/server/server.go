@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/purplespacecat/kscope/internal/graph"
+	"github.com/purplespacecat/kscope/web"
 )
 
 type Server struct {
@@ -23,7 +25,27 @@ func New(store *graph.Store) *Server {
 	s.mux.HandleFunc("GET /api/namespaces", s.handleNamespaces)
 	s.mux.HandleFunc("GET /api/graph/latest", s.handleLatest)
 	s.mux.HandleFunc("POST /api/graph/refresh", s.handleRefresh)
+
+	// SPA: serve the embedded build at /. stdlib's mux picks the more specific
+	// /api/* and /healthz patterns above before falling through to this one,
+	// so no conflict.
+	if h, err := spaHandler(); err != nil {
+		log.Printf("warn: SPA assets unavailable: %v", err)
+	} else {
+		s.mux.Handle("/", h)
+	}
 	return s
+}
+
+// spaHandler returns a file server rooted at the embedded web/dist directory.
+// If the SPA hasn't been built yet (only .gitkeep present), callers still get
+// a handler that returns 404s — we don't want to break /api/*.
+func spaHandler() (http.Handler, error) {
+	sub, err := fs.Sub(web.Dist, "dist")
+	if err != nil {
+		return nil, fmt.Errorf("sub fs: %w", err)
+	}
+	return http.FileServer(http.FS(sub)), nil
 }
 
 func (s *Server) Run(port string) error {
