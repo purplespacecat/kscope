@@ -1,0 +1,19 @@
+# Config for github.com/air-verse/air — watches Go source and rebuilds on save.
+# Only used when you run `air` directly (or via scripts/dev.sh).
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+cmd = "go build -o tmp/kscope ./cmd/kscope"
+bin = "tmp/kscope --port 8080 --data-dir ./data"
+include_ext = ["go"]
+exclude_dir = ["web", "data", "tmp", "bin", "docs", ".git"]
+delay = 500
+stop_on_error = true
+
+[log]
+time = false
+
+[misc]
+clean_on_exit = true

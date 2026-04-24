@@ -4,3 +4,14 @@
 vendor/
 .env
 kubeconfig
+
+# Runtime data
+/data/
+
+# air live-reload build output
+/tmp/
+
+# Frontend build artifacts
+/web/node_modules/
+/web/dist/*
+!/web/dist/.gitkeep
