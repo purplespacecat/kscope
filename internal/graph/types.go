@@ -45,6 +45,30 @@ type Node struct {
 	// plane is one process). Rendered dashed in the UI.
 	Synthetic bool   `json:"synthetic,omitempty"`
 	Kubectl   string `json:"kubectl,omitempty"` // copy-paste command to fetch this object live
+	// GitOps is set when a GitOps controller manages this object (detected
+	// via Flux's ownership labels); nil otherwise.
+	GitOps *GitOpsRef `json:"gitops,omitempty"`
+	// Links are clickable external references (e.g. a source repository).
+	Links []Link `json:"links,omitempty"`
+}
+
+// GitOpsRef records which GitOps object manages a resource and where its
+// definition lives in Git (spec §4.5).
+type GitOpsRef struct {
+	Tool       string `json:"tool"`                 // "flux"
+	Kind       string `json:"kind"`                 // "Kustomization" | "HelmRelease"
+	Name       string `json:"name"`
+	Namespace  string `json:"namespace"`
+	SourceRepo string `json:"sourceRepo,omitempty"` // git/oci/helm URL as declared
+	SourcePath string `json:"sourcePath,omitempty"` // path within the source (or chart name)
+	Revision   string `json:"revision,omitempty"`   // applied revision, e.g. "main@sha1:abc…"
+	WebURL     string `json:"webURL,omitempty"`     // browsable tree link when the host is recognizable
+}
+
+// Link is a clickable external reference shown in the details panel.
+type Link struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 // Edge is a directed cross-cutting relationship between two nodes.
@@ -56,7 +80,7 @@ type Edge struct {
 	Kind   string `json:"kind"`
 }
 
-// Edge kinds (spec §3). GitOps kinds arrive with milestone 4.
+// Edge kinds (spec §3).
 const (
 	EdgeMounts      = "mounts"       // Pod → ConfigMap/Secret/PVC via volumes
 	EdgeReferences  = "references"   // Pod → ConfigMap/Secret via env/envFrom/imagePullSecrets
@@ -66,6 +90,8 @@ const (
 	EdgeBinds       = "binds"        // PVC → PV → StorageClass
 	EdgeScheduledOn = "scheduled-on" // Pod → Node
 	EdgeDependsOn   = "depends-on"   // Node → api-server → datastore; infra spine
+	EdgeManagedBy   = "managed-by"   // resource → Flux Kustomization/HelmRelease
+	EdgeSourcedFrom = "sourced-from" // Kustomization/HelmRelease → Git/OCI/Helm repository
 )
 
 // ClusterMeta identifies where a snapshot came from.

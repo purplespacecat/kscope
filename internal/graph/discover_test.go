@@ -66,7 +66,7 @@ func TestDiscover_BuildsOwnershipTree(t *testing.T) {
 		},
 	)
 
-	snap, err := discover(context.Background(), cs, ClusterMeta{Context: "test"}, Scope{Namespaces: []string{"app"}})
+	snap, err := discover(context.Background(), cs, nil,ClusterMeta{Context: "test"}, Scope{Namespaces: []string{"app"}})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestDiscover_OwnerOutOfScopeFallsBackToNamespace(t *testing.T) {
 		},
 	)
 
-	snap, err := discover(context.Background(), cs, ClusterMeta{}, Scope{Namespaces: []string{"app"}})
+	snap, err := discover(context.Background(), cs, nil,ClusterMeta{}, Scope{Namespaces: []string{"app"}})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestDiscover_OwnerOutOfScopeFallsBackToNamespace(t *testing.T) {
 func TestDiscover_EmptyScopeCoversAllNamespaces(t *testing.T) {
 	cs := fake.NewClientset(activeNamespace("a"), activeNamespace("b"))
 
-	snap, err := discover(context.Background(), cs, ClusterMeta{}, Scope{})
+	snap, err := discover(context.Background(), cs, nil,ClusterMeta{}, Scope{})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestDiscover_SkipsScaledDownReplicaSets(t *testing.T) {
 		},
 	)
 
-	snap, err := discover(context.Background(), cs, ClusterMeta{}, Scope{Namespaces: []string{"app"}})
+	snap, err := discover(context.Background(), cs, nil,ClusterMeta{}, Scope{Namespaces: []string{"app"}})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}

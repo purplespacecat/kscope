@@ -77,6 +77,14 @@ function layout(
               </span>
               <span className="block text-[10px] text-slate-400">{n.kind}</span>
             </span>
+            {n.gitops && (
+              <span
+                title={`Managed by Flux ${n.gitops.kind} ${n.gitops.namespace}/${n.gitops.name}`}
+                className="shrink-0 rounded bg-fuchsia-50 px-1 text-[9px] font-semibold text-fuchsia-600"
+              >
+                flux
+              </span>
+            )}
             {hiddenKids > 0 && (
               <span
                 title={`${hiddenKids} more inside — click to focus`}

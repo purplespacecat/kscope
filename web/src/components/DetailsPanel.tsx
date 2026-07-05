@@ -4,6 +4,7 @@ import { useManifest } from "../hooks/useGraph";
 import {
   HEALTH_DOT,
   HEALTH_LABEL,
+  gitopsManagerId,
   health,
   incomingEdgeLabel,
   kindAbbrev,
@@ -123,6 +124,69 @@ export function DetailsPanel({
           </span>
         </section>
 
+        {node.gitops && (
+          <section>
+            <SectionTitle>GitOps — Flux</SectionTitle>
+            <div className="space-y-1.5 rounded border border-fuchsia-200 bg-fuchsia-50/40 p-2.5 text-xs">
+              <GitOpsRow label="Managed by">
+                {(() => {
+                  const manager = byId.get(gitopsManagerId(node.gitops));
+                  const text = `${node.gitops.kind} ${node.gitops.namespace}/${node.gitops.name}`;
+                  return manager ? (
+                    <button
+                      type="button"
+                      onClick={() => onSelect(manager)}
+                      className="truncate text-fuchsia-700 hover:underline"
+                      title={text}
+                    >
+                      {text}
+                    </button>
+                  ) : (
+                    <span className="truncate text-slate-700">{text}</span>
+                  );
+                })()}
+              </GitOpsRow>
+              {node.gitops.sourceRepo && (
+                <GitOpsRow label="Source">
+                  <span
+                    className="truncate text-slate-700"
+                    title={node.gitops.sourceRepo}
+                  >
+                    {node.gitops.sourceRepo}
+                  </span>
+                </GitOpsRow>
+              )}
+              {node.gitops.sourcePath && (
+                <GitOpsRow label="Path">
+                  <span className="truncate text-slate-700">
+                    {node.gitops.sourcePath}
+                  </span>
+                </GitOpsRow>
+              )}
+              {node.gitops.revision && (
+                <GitOpsRow label="Revision">
+                  <span
+                    className="truncate font-mono text-[11px] text-slate-700"
+                    title={node.gitops.revision}
+                  >
+                    {node.gitops.revision}
+                  </span>
+                </GitOpsRow>
+              )}
+              {node.gitops.webURL && (
+                <a
+                  href={node.gitops.webURL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-block rounded bg-fuchsia-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-fuchsia-700"
+                >
+                  Open in Git ↗
+                </a>
+              )}
+            </div>
+          </section>
+        )}
+
         {node.kubectl && (
           <section>
             <SectionTitle>Retrieve with kubectl</SectionTitle>
@@ -204,6 +268,26 @@ export function DetailsPanel({
           </section>
         )}
 
+        {node.links && node.links.length > 0 && (
+          <section>
+            <SectionTitle>Links</SectionTitle>
+            <div className="space-y-0.5 text-xs">
+              {node.links.map((l) => (
+                <a
+                  key={l.url}
+                  href={l.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block truncate text-blue-600 hover:underline"
+                  title={l.url}
+                >
+                  {l.label} ↗
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+
         <details className="text-xs">
           <summary className="cursor-pointer text-slate-400 hover:text-slate-600">
             Raw node
@@ -214,6 +298,23 @@ export function DetailsPanel({
         </details>
       </div>
     </aside>
+  );
+}
+
+function GitOpsRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="w-20 shrink-0 text-[10px] uppercase tracking-wide text-slate-400">
+        {label}
+      </span>
+      <span className="flex min-w-0 flex-1">{children}</span>
+    </div>
   );
 }
 

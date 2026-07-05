@@ -17,7 +17,7 @@ import (
 func edgeSet(t *testing.T, scope Scope, objs ...runtime.Object) map[string]bool {
 	t.Helper()
 	cs := fake.NewClientset(objs...)
-	snap, err := discover(context.Background(), cs, ClusterMeta{}, scope)
+	snap, err := discover(context.Background(), cs, nil,ClusterMeta{}, scope)
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestInferEdges_StorageChainAndPruning(t *testing.T) {
 		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "fast"}},
 		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "unused"}},
 	)
-	snap, err := discover(context.Background(), cs, ClusterMeta{}, Scope{Namespaces: []string{"app"}})
+	snap, err := discover(context.Background(), cs, nil,ClusterMeta{}, Scope{Namespaces: []string{"app"}})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
