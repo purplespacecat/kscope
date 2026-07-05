@@ -167,6 +167,13 @@ func discover(ctx context.Context, cs kubernetes.Interface, meta ClusterMeta, sc
 		}
 	}
 
+	// Infrastructure layer (spec §4.4): real nodes + a logical control-plane.
+	// controlPlane must come first so node → api-server edges find a target.
+	if scope.IncludeInfra {
+		b.controlPlane(ctx, cs, meta.Distro)
+		b.clusterNodes(ctx, cs)
+	}
+
 	// Owners may be listed after their children (or not at all), so parent
 	// resolution is a second pass over the complete set.
 	b.resolveParents()

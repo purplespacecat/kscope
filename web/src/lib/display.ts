@@ -5,6 +5,9 @@ import type { GraphNode, Health } from "../types/graph";
 
 const KIND_ABBREV: Record<string, string> = {
   Cluster: "CL",
+  ControlPlane: "CP",
+  Component: "CMP",
+  Node: "NO",
   Namespace: "NS",
   Deployment: "D",
   StatefulSet: "STS",
@@ -32,6 +35,9 @@ export function kindAbbrev(kind: string): string {
 // machinery after, then networking, config, and storage.
 const KIND_ORDER = [
   "Cluster",
+  "ControlPlane",
+  "Component",
+  "Node",
   "Namespace",
   "Deployment",
   "StatefulSet",
@@ -105,6 +111,8 @@ export const EDGE_STYLE: Record<string, { stroke: string }> = {
   selects: { stroke: "#10b981" }, // emerald
   exposes: { stroke: "#f97316" }, // orange
   binds: { stroke: "#0d9488" }, // teal
+  "scheduled-on": { stroke: "#06b6d4" }, // cyan
+  "depends-on": { stroke: "#6366f1" }, // indigo
 };
 
 const INCOMING_LABEL: Record<string, string> = {
@@ -114,6 +122,8 @@ const INCOMING_LABEL: Record<string, string> = {
   selects: "selected by",
   exposes: "exposed by",
   binds: "bound by",
+  "scheduled-on": "hosts",
+  "depends-on": "depended on by",
 };
 
 /** Label for an edge read from the target's side. */

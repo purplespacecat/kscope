@@ -182,7 +182,7 @@ export function DetailsPanel({
           </section>
         )}
 
-        {node.kind !== "Cluster" && (
+        {!node.synthetic && node.kind !== "Cluster" && (
           <section>
             <div className="mb-1.5 flex items-center justify-between">
               <SectionTitle noMargin>Manifest</SectionTitle>

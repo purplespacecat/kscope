@@ -94,7 +94,10 @@ function layout(
         padding: 8,
         borderRadius: 8,
         // Health shows as a left accent stripe; selection as a blue ring.
-        border: isSelected ? "2px solid #3b82f6" : "1px solid #cbd5e1",
+        // Synthetic (logical) nodes are dashed — there's no API object there.
+        border: isSelected
+          ? "2px solid #3b82f6"
+          : `1px ${n.synthetic ? "dashed" : "solid"} #cbd5e1`,
         boxShadow: isSelected
           ? "0 0 0 3px rgba(59,130,246,0.25)"
           : `inset 3px 0 0 ${hex}`,
@@ -114,6 +117,9 @@ function layout(
       target: e.target,
       label: e.kind === "contains" ? undefined : e.kind,
       labelStyle: { fontSize: 10, fill: rel?.stroke ?? "#64748b" },
+      // Orthogonal routing for relationship edges — bezier curves between
+      // same-rank siblings (e.g. scheduler → api-server) loop unpleasantly.
+      type: rel ? "smoothstep" : undefined,
       style: rel
         ? { stroke: rel.stroke, strokeDasharray: "6 3" }
         : { stroke: "#cbd5e1" },

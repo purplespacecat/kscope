@@ -15,6 +15,7 @@ func main() {
 	port := flag.String("port", "8080", "HTTP listen port")
 	dataDir := flag.String("data-dir", "./data", "directory for persisted snapshot")
 	discoverNS := flag.String("discover-namespaces", "", "if set, run one discovery pass for these comma-separated namespaces and exit (no HTTP server)")
+	includeInfra := flag.Bool("include-infra", true, "one-shot mode: include cluster nodes + control-plane")
 	redactExtra := flag.String("redact-extra", "", "extra comma-separated dotted paths to redact in every manifest, e.g. spec.password")
 	flag.Parse()
 
@@ -32,7 +33,7 @@ func main() {
 	}
 
 	if *discoverNS != "" {
-		runCLIDiscover(store, *discoverNS)
+		runCLIDiscover(store, *discoverNS, *includeInfra)
 		return
 	}
 
@@ -45,7 +46,7 @@ func main() {
 
 // runCLIDiscover is the terminal-triggered invocation path. It runs the same
 // discovery code the HTTP handler runs, then exits.
-func runCLIDiscover(store *graph.Store, raw string) {
+func runCLIDiscover(store *graph.Store, raw string, includeInfra bool) {
 	var ns []string
 	for _, part := range strings.Split(raw, ",") {
 		if p := strings.TrimSpace(part); p != "" {
@@ -55,7 +56,7 @@ func runCLIDiscover(store *graph.Store, raw string) {
 	if len(ns) == 0 {
 		log.Fatal("--discover-namespaces must contain at least one namespace")
 	}
-	snap, err := graph.Discover(context.Background(), graph.Scope{Namespaces: ns})
+	snap, err := graph.Discover(context.Background(), graph.Scope{Namespaces: ns, IncludeInfra: includeInfra})
 	if err != nil {
 		log.Fatalf("discover: %v", err)
 	}

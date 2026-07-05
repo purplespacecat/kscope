@@ -13,6 +13,7 @@ export function ScopePanel({ snapshot }: Props) {
   const refresh = useRefresh();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [includeInfra, setIncludeInfra] = useState(true);
   const [filter, setFilter] = useState("");
 
   // Re-hydrate selection from the server snapshot every time a new one lands
@@ -22,7 +23,10 @@ export function ScopePanel({ snapshot }: Props) {
   const [seenSnapshot, setSeenSnapshot] = useState<Props["snapshot"]>(undefined);
   if (snapshot !== seenSnapshot) {
     setSeenSnapshot(snapshot);
-    if (snapshot) setSelected(new Set(snapshot.scope.namespaces));
+    if (snapshot) {
+      setSelected(new Set(snapshot.scope.namespaces));
+      setIncludeInfra(snapshot.scope.includeInfra ?? false);
+    }
   }
 
   const visible = useMemo(() => {
@@ -40,7 +44,7 @@ export function ScopePanel({ snapshot }: Props) {
   };
 
   const onRun = () => {
-    refresh.mutate({ namespaces: [...selected] });
+    refresh.mutate({ namespaces: [...selected], includeInfra });
   };
 
   // Rendered as the top section of the left sidebar (App owns the column);
@@ -85,6 +89,19 @@ export function ScopePanel({ snapshot }: Props) {
       </div>
 
       <div className="border-t border-slate-200 p-3">
+        <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={includeInfra}
+            onChange={(e) => setIncludeInfra(e.target.checked)}
+          />
+          <span>
+            Include infrastructure
+            <span className="block text-[10px] text-slate-400">
+              nodes + control plane
+            </span>
+          </span>
+        </label>
         <button
           type="button"
           onClick={onRun}
