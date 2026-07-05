@@ -1,8 +1,9 @@
 # kscope v1 Spec — Interactive cluster map
 
-Status: draft • Supersedes the stub described in `README.md` / `architecture.md` for
-the discovery + UI layers. The invocation model (semi-dynamic snapshot, single
-global latest, atomic file persistence) is unchanged.
+Status: **v1 shipped** — all five milestones implemented and verified against a
+live k3s + Flux cluster (see §8 for per-milestone notes and deviations). The
+invocation model (semi-dynamic snapshot, single global latest, atomic file
+persistence) is unchanged from the original design.
 
 ## 1. Goal
 
@@ -350,8 +351,15 @@ This spec grows both sides together.
    GitOps card. GVRs are resolved through the discovery API rather than
    hardcoded versions (Flux moves kinds between v1beta2/v1). HelmRelease
    chartRef (OCI-direct) yields manager identity without source enrichment.
-5. **Generic CRDs** — dynamic CRD + instance discovery, `instance-of` edges,
-   `IncludeCRDs` toggle. (Covers Crossplane, Flux CRs, anything.)
+5. **Generic CRDs** ✅ *(shipped)* — dynamic CRD + instance discovery,
+   `instance-of` edges, `IncludeCRDs` toggle. (Covers Crossplane, Flux
+   notification CRs, anything.) Deviations: CRD definitions sit under a
+   synthetic "custom resources" group node to keep the cluster fan readable;
+   only CRDs with in-scope instances become nodes (PV/SC-style pruning);
+   cluster-scoped instances live under their definition; CRD manifests have
+   their OpenAPI schemas stripped (size/noise); instances are listed
+   cluster-wide once per CRD and scope-filtered in-process; the Flux toolkit
+   groups are skipped here (the GitOps pass models them richly).
 
 *Later (post-v1):* multi-cluster root, live updates (SSE), large-cluster
 progressive rendering, optional secret-scanning of non-Secret manifests.

@@ -11,6 +11,9 @@ type Scope struct {
 	// IncludeInfra adds the infrastructure layer: cluster Nodes, the logical
 	// control-plane components, and their depends-on/scheduled-on edges.
 	IncludeInfra bool `json:"includeInfra,omitempty"`
+	// IncludeCRDs adds generic custom-resource discovery: every CRD's
+	// in-scope instances with instance-of edges back to the definition.
+	IncludeCRDs bool `json:"includeCRDs,omitempty"`
 }
 
 // Health is a coarse rollup of an object's status, computed at discovery time
@@ -55,8 +58,8 @@ type Node struct {
 // GitOpsRef records which GitOps object manages a resource and where its
 // definition lives in Git (spec §4.5).
 type GitOpsRef struct {
-	Tool       string `json:"tool"`                 // "flux"
-	Kind       string `json:"kind"`                 // "Kustomization" | "HelmRelease"
+	Tool       string `json:"tool"` // "flux"
+	Kind       string `json:"kind"` // "Kustomization" | "HelmRelease"
 	Name       string `json:"name"`
 	Namespace  string `json:"namespace"`
 	SourceRepo string `json:"sourceRepo,omitempty"` // git/oci/helm URL as declared
@@ -92,6 +95,7 @@ const (
 	EdgeDependsOn   = "depends-on"   // Node → api-server → datastore; infra spine
 	EdgeManagedBy   = "managed-by"   // resource → Flux Kustomization/HelmRelease
 	EdgeSourcedFrom = "sourced-from" // Kustomization/HelmRelease → Git/OCI/Helm repository
+	EdgeInstanceOf  = "instance-of"  // custom resource → its CRD
 )
 
 // ClusterMeta identifies where a snapshot came from.

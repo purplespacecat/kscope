@@ -14,6 +14,7 @@ export function ScopePanel({ snapshot }: Props) {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [includeInfra, setIncludeInfra] = useState(true);
+  const [includeCRDs, setIncludeCRDs] = useState(true);
   const [filter, setFilter] = useState("");
 
   // Re-hydrate selection from the server snapshot every time a new one lands
@@ -26,6 +27,7 @@ export function ScopePanel({ snapshot }: Props) {
     if (snapshot) {
       setSelected(new Set(snapshot.scope.namespaces));
       setIncludeInfra(snapshot.scope.includeInfra ?? false);
+      setIncludeCRDs(snapshot.scope.includeCRDs ?? false);
     }
   }
 
@@ -44,7 +46,7 @@ export function ScopePanel({ snapshot }: Props) {
   };
 
   const onRun = () => {
-    refresh.mutate({ namespaces: [...selected], includeInfra });
+    refresh.mutate({ namespaces: [...selected], includeInfra, includeCRDs });
   };
 
   // Rendered as the top section of the left sidebar (App owns the column);
@@ -99,6 +101,19 @@ export function ScopePanel({ snapshot }: Props) {
             Include infrastructure
             <span className="block text-[10px] text-slate-400">
               nodes + control plane
+            </span>
+          </span>
+        </label>
+        <label className="mb-2 flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={includeCRDs}
+            onChange={(e) => setIncludeCRDs(e.target.checked)}
+          />
+          <span>
+            Include custom resources
+            <span className="block text-[10px] text-slate-400">
+              CRDs + their instances
             </span>
           </span>
         </label>
