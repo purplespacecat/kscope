@@ -345,8 +345,11 @@ This spec grows both sides together.
    kubeadm static pods when present; on k3s components are synthetic and
    healthy-by-reachability. CoreDNS/kubelet synthetic duplicates were skipped
    (CoreDNS already appears as a real Deployment).
-4. **Flux GitOps** — toolkit discovery, label back-refs, source resolution,
-   `WebURL` deep-links, GitOps card.
+4. **Flux GitOps** ✅ *(shipped)* — toolkit discovery, label back-refs, source
+   resolution, `WebURL` deep-links (sha-pinned tree links on github/gitlab),
+   GitOps card. GVRs are resolved through the discovery API rather than
+   hardcoded versions (Flux moves kinds between v1beta2/v1). HelmRelease
+   chartRef (OCI-direct) yields manager identity without source enrichment.
 5. **Generic CRDs** — dynamic CRD + instance discovery, `instance-of` edges,
    `IncludeCRDs` toggle. (Covers Crossplane, Flux CRs, anything.)
 
