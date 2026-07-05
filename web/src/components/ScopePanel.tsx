@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNamespaces, useRefresh } from "../hooks/useGraph";
 import type { Snapshot } from "../types/graph";
 
@@ -15,11 +15,15 @@ export function ScopePanel({ snapshot }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState("");
 
-  // Re-hydrate selection from the server snapshot every time it changes —
-  // this is what makes "refresh the browser and keep the same view" work.
-  useEffect(() => {
+  // Re-hydrate selection from the server snapshot every time a new one lands
+  // — this is what makes "refresh the browser and keep the same view" work.
+  // Render-time adjustment instead of an effect (react-hooks lint): React
+  // re-renders immediately with the new state, no flash of stale selection.
+  const [seenSnapshot, setSeenSnapshot] = useState<Props["snapshot"]>(undefined);
+  if (snapshot !== seenSnapshot) {
+    setSeenSnapshot(snapshot);
     if (snapshot) setSelected(new Set(snapshot.scope.namespaces));
-  }, [snapshot]);
+  }
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -39,8 +43,10 @@ export function ScopePanel({ snapshot }: Props) {
     refresh.mutate({ namespaces: [...selected] });
   };
 
+  // Rendered as the top section of the left sidebar (App owns the column);
+  // capped height so the resource tree below always keeps room.
   return (
-    <aside className="flex h-full w-72 flex-col border-r border-slate-200 bg-white">
+    <section className="flex max-h-[45%] shrink-0 flex-col border-b border-slate-200">
       <div className="border-b border-slate-200 px-4 py-3">
         <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
           Scope
@@ -93,6 +99,6 @@ export function ScopePanel({ snapshot }: Props) {
           </p>
         )}
       </div>
-    </aside>
+    </section>
   );
 }

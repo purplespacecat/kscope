@@ -16,12 +16,25 @@ export function Header({ snapshot }: Props) {
       <div className="text-xs text-slate-600">
         {snapshot ? (
           <>
+            {snapshot.cluster && (
+              <>
+                <span className="font-medium text-slate-900">
+                  {snapshot.cluster.context}
+                </span>
+                <span className="mx-2 text-slate-300">·</span>
+                <span>
+                  {snapshot.cluster.version}
+                  {snapshot.cluster.distro && ` (${snapshot.cluster.distro})`}
+                </span>
+                <span className="mx-2 text-slate-300">·</span>
+              </>
+            )}
             <span className="font-medium text-slate-900">
               Last run: {new Date(snapshot.timestamp).toLocaleString()}
             </span>
             <span className="mx-2 text-slate-300">·</span>
             <span>
-              namespaces: {snapshot.scope.namespaces.join(", ") || "—"}
+              namespaces: {snapshot.scope.namespaces.join(", ") || "all"}
             </span>
             <span className="mx-2 text-slate-300">·</span>
             <span>

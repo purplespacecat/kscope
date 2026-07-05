@@ -17,14 +17,27 @@ import (
 type Server struct {
 	mux   *http.ServeMux
 	store *graph.Store
+
+	// Indirection points for the cluster-touching calls, so handler tests can
+	// swap in deterministic fakes instead of needing a live kubeconfig.
+	discover       func(context.Context, graph.Scope) (graph.Snapshot, error)
+	listNamespaces func(context.Context) ([]string, error)
 }
 
 func New(store *graph.Store) *Server {
-	s := &Server{mux: http.NewServeMux(), store: store}
+	s := &Server{
+		mux:            http.NewServeMux(),
+		store:          store,
+		discover:       graph.Discover,
+		listNamespaces: graph.ListNamespaces,
+	}
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /api/namespaces", s.handleNamespaces)
 	s.mux.HandleFunc("GET /api/graph/latest", s.handleLatest)
 	s.mux.HandleFunc("POST /api/graph/refresh", s.handleRefresh)
+	// Node IDs contain slashes ("apps/deployment/ns/name"), so the id is a
+	// trailing path wildcard rather than a single segment.
+	s.mux.HandleFunc("GET /api/node/manifest/{id...}", s.handleManifest)
 
 	// SPA: serve the embedded build at /. stdlib's mux picks the more specific
 	// /api/* and /healthz patterns above before falling through to this one,
@@ -58,7 +71,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
-	ns, err := graph.ListNamespaces(r.Context())
+	ns, err := s.listNamespaces(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -79,22 +92,37 @@ func (s *Server) handleLatest(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, snap)
 }
 
+// handleManifest serves one node's redacted YAML as plain text — curl-able
+// and trivially rendered by the SPA.
+func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
+	y, err := s.store.Manifest(r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, graph.ErrEmpty) || errors.Is(err, graph.ErrNoManifest) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+	if _, err := w.Write([]byte(y)); err != nil {
+		log.Printf("write manifest response: %v", err)
+	}
+}
+
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	var scope graph.Scope
 	if err := json.NewDecoder(r.Body).Decode(&scope); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	if len(scope.Namespaces) == 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("namespaces must be non-empty"))
-		return
-	}
+	// An empty namespace list is valid: it means "every namespace" (spec §3).
 
 	// Bound discovery so a slow pass doesn't hold the request forever.
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	snap, err := graph.Discover(ctx, scope)
+	snap, err := s.discover(ctx, scope)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

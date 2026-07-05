@@ -23,6 +23,18 @@ export function useNamespaces() {
   });
 }
 
+// Manifest for one node. Keyed by snapshot timestamp so a new discovery
+// naturally invalidates every cached manifest.
+export function useManifest(id: string | null, snapshotTs: string | undefined) {
+  return useQuery<string>({
+    queryKey: ["manifest", snapshotTs, id],
+    queryFn: () => api.getManifest(id!),
+    enabled: !!id && !!snapshotTs,
+    staleTime: Infinity,
+    retry: false, // 404 = "no manifest", retrying won't change that
+  });
+}
+
 export function useRefresh() {
   const qc = useQueryClient();
   return useMutation<Snapshot, Error, Scope>({
