@@ -20,7 +20,7 @@ func readyNode(name string) *corev1.Node {
 
 func TestInfra_OffByDefault(t *testing.T) {
 	cs := fake.NewClientset(activeNamespace("app"), readyNode("worker-1"))
-	snap, err := discover(context.Background(), cs, nil,ClusterMeta{}, Scope{Namespaces: []string{"app"}})
+	snap, err := discover(context.Background(), cs, nil, ClusterMeta{}, Scope{Namespaces: []string{"app"}})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestInfra_NodesControlPlaneAndSpine(t *testing.T) {
 			Status:     corev1.PodStatus{Phase: corev1.PodRunning},
 		},
 	)
-	snap, err := discover(context.Background(), cs, nil,ClusterMeta{Distro: "k3s"},
+	snap, err := discover(context.Background(), cs, nil, ClusterMeta{Distro: "k3s"},
 		Scope{Namespaces: []string{"app"}, IncludeInfra: true})
 	if err != nil {
 		t.Fatalf("discover: %v", err)
@@ -105,7 +105,7 @@ func TestInfra_StaticPodHealthMirrored(t *testing.T) {
 			},
 		},
 	)
-	snap, err := discover(context.Background(), cs, nil,ClusterMeta{},
+	snap, err := discover(context.Background(), cs, nil, ClusterMeta{},
 		Scope{Namespaces: []string{"app"}, IncludeInfra: true})
 	if err != nil {
 		t.Fatalf("discover: %v", err)

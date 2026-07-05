@@ -5,6 +5,8 @@ export interface Scope {
   namespaces: string[];
   /** Adds cluster Nodes + logical control-plane to the discovery. */
   includeInfra?: boolean;
+  /** Adds generic custom resources (CRDs + their instances). */
+  includeCRDs?: boolean;
 }
 
 export type Health = "healthy" | "warning" | "error" | "unknown";

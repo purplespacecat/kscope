@@ -54,6 +54,20 @@ func redactManifest(m map[string]any, kind string) {
 		}
 	}
 
+	// CRD manifests embed full OpenAPI schemas — often 100KB+ of noise per
+	// definition. Strip them; names/scope/versions carry the actual signal.
+	if kind == "CustomResourceDefinition" {
+		if spec, ok := m["spec"].(map[string]any); ok {
+			if versions, ok := spec["versions"].([]any); ok {
+				for _, v := range versions {
+					if vm, ok := v.(map[string]any); ok {
+						delete(vm, "schema")
+					}
+				}
+			}
+		}
+	}
+
 	// Secrets keep their keys (useful for wiring) but never their values.
 	if kind == "Secret" {
 		for _, field := range []string{"data", "stringData"} {

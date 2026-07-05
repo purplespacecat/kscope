@@ -122,25 +122,7 @@ func fluxHealth(u *unstructured.Unstructured) Health {
 	if suspended, _, _ := unstructured.NestedBool(u.Object, "spec", "suspend"); suspended {
 		return HealthWarning
 	}
-	conds, found, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
-	if !found {
-		return HealthUnknown
-	}
-	for _, c := range conds {
-		m, ok := c.(map[string]any)
-		if !ok || m["type"] != "Ready" {
-			continue
-		}
-		switch m["status"] {
-		case "True":
-			return HealthHealthy
-		case "False":
-			return HealthError
-		default:
-			return HealthWarning // reconciling / unknown
-		}
-	}
-	return HealthUnknown
+	return conditionHealth(u, "Ready")
 }
 
 // fluxSource is what a managed resource inherits onto its GitOpsRef.

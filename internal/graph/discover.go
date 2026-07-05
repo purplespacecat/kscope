@@ -159,6 +159,11 @@ func discover(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Interfac
 	// they're CRDs. Absent CRDs mean Flux isn't installed: skipped silently.
 	b.fluxObjects(ctx, cs.Discovery(), dyn, selected)
 
+	// Generic custom resources (spec §8.5): every other CRD's instances.
+	if scope.IncludeCRDs {
+		b.customResources(ctx, dyn, wanted)
+	}
+
 	// Cluster-scoped storage is listed once but NOT pushed wholesale — only
 	// objects referenced by an in-scope PVC chain become nodes (§4.3), so a
 	// namespace-scoped invocation stays namespace-scoped.

@@ -8,6 +8,8 @@ const KIND_ABBREV: Record<string, string> = {
   ControlPlane: "CP",
   Component: "CMP",
   Node: "NO",
+  CRDGroup: "CRDS",
+  CustomResourceDefinition: "CRD",
   Namespace: "NS",
   Deployment: "D",
   StatefulSet: "STS",
@@ -43,6 +45,8 @@ const KIND_ORDER = [
   "ControlPlane",
   "Component",
   "Node",
+  "CRDGroup",
+  "CustomResourceDefinition",
   "Namespace",
   "Deployment",
   "StatefulSet",
@@ -125,6 +129,7 @@ export const EDGE_STYLE: Record<string, { stroke: string }> = {
   "depends-on": { stroke: "#6366f1" }, // indigo
   "managed-by": { stroke: "#d946ef" }, // fuchsia — GitOps
   "sourced-from": { stroke: "#ec4899" }, // pink — GitOps
+  "instance-of": { stroke: "#65a30d" }, // lime — CR → its definition
 };
 
 const INCOMING_LABEL: Record<string, string> = {
@@ -138,6 +143,7 @@ const INCOMING_LABEL: Record<string, string> = {
   "depends-on": "depended on by",
   "managed-by": "manages",
   "sourced-from": "sources",
+  "instance-of": "instantiated by",
 };
 
 /** Label for an edge read from the target's side. */
