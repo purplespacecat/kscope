@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -138,7 +139,7 @@ func (b *builder) pushCR(u *unstructured.Unstructured, gvr schema.GroupVersionRe
 		UID:        string(u.GetUID()),
 		ParentID:   parent,
 		Labels:     u.GetLabels(),
-		Health:     conditionHealth(u, "Ready"),
+		Health:     conditionHealth(u, "Ready", "Available", "Reconciled"),
 		Kubectl:    kubectlCmd(b.kubectx, ns, "get "+resource+" "+u.GetName()+" -o yaml"),
 	}, u.GetUID(), controllerUID(u.GetOwnerReferences()))
 	b.captureManifest(id, u.DeepCopy(), gvr.GroupVersion().String(), kind)
@@ -171,29 +172,80 @@ func servedVersion(crd *unstructured.Unstructured) string {
 	return firstServed
 }
 
-// conditionHealth reads a standard status condition ("Ready" for most CRs,
-// "Established" for CRDs). Objects that report no conditions at all count as
-// healthy — like ConfigMaps, existing is their whole job, and grading them
-// "unknown" would wash out the tree health rollups with gray. Only an object
-// that has conditions but not the sought one is truly unknown.
-func conditionHealth(u *unstructured.Unstructured, condType string) Health {
+// conditionHealth reads the first recognized status condition, trying the
+// given types in priority order — different operators speak different
+// dialects ("Ready" for cert-manager/Flux, "Available"/"Reconciled" for
+// prometheus-operator, "Established" for CRDs). Objects that report no
+// conditions at all count as healthy — like ConfigMaps, existing is their
+// whole job, and grading them "unknown" would wash the tree health rollups
+// gray. Only an object whose conditions match none of the sought types is
+// truly unknown. All sought types are positive-polarity (True = good).
+func conditionHealth(u *unstructured.Unstructured, condTypes ...string) Health {
 	conds, found, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
 	if !found || len(conds) == 0 {
 		return HealthHealthy
 	}
-	for _, c := range conds {
-		m, ok := c.(map[string]any)
-		if !ok || m["type"] != condType {
-			continue
-		}
-		switch m["status"] {
-		case "True":
-			return HealthHealthy
-		case "False":
-			return HealthError
-		default:
-			return HealthWarning
+	for _, want := range condTypes {
+		for _, c := range conds {
+			m, ok := c.(map[string]any)
+			if !ok || m["type"] != want {
+				continue
+			}
+			switch m["status"] {
+			case "True":
+				return HealthHealthy
+			case "False":
+				return HealthError
+			default:
+				return HealthWarning
+			}
 		}
 	}
-	return HealthUnknown
+	return suffixConditionHealth(conds)
+}
+
+// Positive-polarity condition-type suffixes, CamelCase. Operators invent
+// component-specific types like metallb's "poolReconcilerValid" — the suffix
+// still carries the meaning. Matching is case-SENSITIVE on purpose: inverted
+// types ("Invalid", "NotReady") end in lowercase "valid"/"Ready"-after-"Not"
+// and must not match.
+var positiveConditionSuffixes = []string{
+	"Valid", "Ready", "Available", "Established", "Loaded", "Succeeded", "Healthy",
+}
+
+// suffixConditionHealth is the fallback tier of conditionHealth: grade by
+// recognizable positive suffixes, worst matched condition wins. Anything
+// still unmatched stays honestly unknown.
+func suffixConditionHealth(conds []any) Health {
+	matched := false
+	worst := HealthHealthy
+	for _, c := range conds {
+		m, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		condType, ok := m["type"].(string)
+		if !ok || strings.HasPrefix(condType, "Not") {
+			continue
+		}
+		for _, suffix := range positiveConditionSuffixes {
+			if !strings.HasSuffix(condType, suffix) {
+				continue
+			}
+			matched = true
+			switch m["status"] {
+			case "True":
+				// stays at current worst
+			case "False":
+				worst = HealthError
+			default:
+				worst = worseHealth(worst, HealthWarning)
+			}
+			break
+		}
+	}
+	if !matched {
+		return HealthUnknown
+	}
+	return worst
 }
