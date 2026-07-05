@@ -19,7 +19,14 @@ Why server-side and not browser state: survives refresh, consistent across tabs,
 
 ### Backend (Go)
 - Stdlib `net/http` with 1.22 method-prefixed patterns. No router dep.
-- `client-go` (planned) for real discovery. Today `internal/graph/discover.go` is a stub that fabricates a small graph per selected namespace so the end-to-end pipe works without cluster access.
+- `client-go` (typed clientset) for discovery, loading the active kubeconfig
+  with kubectl's resolution rules. The containment tree is derived from
+  ownerReferences in a second pass (owners can be listed after their
+  children); per-list failures are recorded in `Stats.Errors`, never fatal.
+  The dynamic client joins in milestone 5 for generic CRD discovery.
+- Handlers reach discovery through injectable function fields on `Server`, so
+  handler tests run against fakes; discovery itself is tested with
+  `client-go`'s fake clientset.
 - Snapshot persistence: `sync.RWMutex`-guarded in-memory cache + atomic-rename file write.
 - SPA served from the same process via `//go:embed`.
 
@@ -42,25 +49,29 @@ Why server-side and not browser state: survives refresh, consistent across tabs,
 | Path | Purpose |
 |---|---|
 | `cmd/kscope` | binary entrypoint; flags, startup load, CLI one-shot |
-| `internal/graph` | `Scope`, `Snapshot`, store (persistence), `Discover` (stub) |
+| `internal/graph` | types, store (graph + manifests persistence), `discover.go` (listers, health, tree), `edges.go` (relationship inference), `manifest.go` (redacted YAML) |
 | `internal/server` | HTTP handlers + SPA fallback |
 | `web` | SPA + Go embed wrapper (`Dist embed.FS`) |
 
 ## Data shape
 
+See `docs/spec-v1.md` §3 for the full model. The essentials:
+
 ```go
 type Scope struct {
-    Namespaces []string `json:"namespaces"`
+    Namespaces []string `json:"namespaces"` // empty = every namespace
 }
 type Snapshot struct {
-    Scope     Scope     `json:"scope"`
-    Timestamp time.Time `json:"timestamp"`
-    Nodes     []Node    `json:"nodes"`
-    Edges     []Edge    `json:"edges"`
+    Scope     Scope       `json:"scope"`
+    Timestamp time.Time   `json:"timestamp"`
+    Cluster   ClusterMeta `json:"cluster"` // context, server, version, distro
+    Nodes     []Node      `json:"nodes"`   // ParentID carries the containment tree
+    Edges     []Edge      `json:"edges"`   // reserved for cross-cutting relations (M2+)
+    Stats     Stats       `json:"stats"`   // counts, duration, non-fatal errors
 }
 ```
 
-`Scope` is a struct, not a list, so adding dimensions (kinds, label selector, cluster-wide toggle) later is backwards-compatible on the wire.
+`Scope` is a struct, not a list, so adding dimensions (kinds, label selector, cluster-wide toggle) later is backwards-compatible on the wire. Containment lives in `Node.ParentID` (exactly one place in the tree per node); `Edges` stay reserved for cross-cutting relationships so the hierarchy is unambiguous.
 
 ## Decisions
 
@@ -74,7 +85,6 @@ type Snapshot struct {
 | SPA serving | embedded via `go:embed` | Single-binary deploy; no CORS story |
 
 ## Open questions / future work
-- Real `client-go` discovery behind `graph.Discover`.
 - Extra scope dimensions: resource kinds, label selectors, cluster-wide.
 - Live updates (SSE/WebSocket) once snapshots have meaningful frequency.
 - Handling very large clusters (pagination, virtual nodes, progressive rendering).

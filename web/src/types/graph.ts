@@ -5,11 +5,22 @@ export interface Scope {
   namespaces: string[];
 }
 
+export type Health = "healthy" | "warning" | "error" | "unknown";
+
 export interface GraphNode {
   id: string;
   kind: string;
   name: string;
   namespace?: string;
+  apiVersion?: string;
+  uid?: string;
+  /** Containment tree position; absent only for the cluster root. */
+  parentId?: string;
+  labels?: Record<string, string>;
+  /** Absent on snapshots taken before milestone 1. */
+  health?: Health;
+  /** Copy-paste command to fetch this object live. */
+  kubectl?: string;
 }
 
 export interface GraphEdge {
@@ -19,9 +30,25 @@ export interface GraphEdge {
   kind: string;
 }
 
+export interface ClusterMeta {
+  context: string;
+  server: string;
+  version: string;
+  distro?: string;
+}
+
+export interface Stats {
+  counts: Record<string, number>;
+  durationMs: number;
+  errors?: string[];
+}
+
 export interface Snapshot {
   scope: Scope;
   timestamp: string; // RFC3339 from Go's time.Time
+  /** Absent on snapshots taken before milestone 1. */
+  cluster?: ClusterMeta;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  stats?: Stats;
 }

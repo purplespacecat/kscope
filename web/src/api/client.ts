@@ -16,6 +16,15 @@ export async function getNamespaces(): Promise<string[]> {
   return body.namespaces;
 }
 
+// Node IDs contain slashes; they're appended as-is (the server route uses a
+// trailing wildcard). Returns raw redacted YAML.
+export async function getManifest(id: string): Promise<string> {
+  const res = await fetch(`/api/node/manifest/${id}`);
+  if (res.status === 404) throw new Error("No manifest in this snapshot");
+  if (!res.ok) throw new Error(`GET manifest: ${res.status}`);
+  return res.text();
+}
+
 export async function refresh(scope: Scope): Promise<Snapshot> {
   const res = await fetch("/api/graph/refresh", {
     method: "POST",

@@ -15,7 +15,16 @@ func main() {
 	port := flag.String("port", "8080", "HTTP listen port")
 	dataDir := flag.String("data-dir", "./data", "directory for persisted snapshot")
 	discoverNS := flag.String("discover-namespaces", "", "if set, run one discovery pass for these comma-separated namespaces and exit (no HTTP server)")
+	redactExtra := flag.String("redact-extra", "", "extra comma-separated dotted paths to redact in every manifest, e.g. spec.password")
 	flag.Parse()
+
+	// Must be set before any discovery runs — redaction happens at capture
+	// time, never retroactively.
+	for _, p := range strings.Split(*redactExtra, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			graph.ExtraRedactPaths = append(graph.ExtraRedactPaths, p)
+		}
+	}
 
 	store := graph.NewStore(filepath.Join(*dataDir, "latest.json"))
 	if err := store.Load(); err != nil {
