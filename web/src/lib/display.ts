@@ -1,4 +1,4 @@
-import type { GraphNode, Health } from "../types/graph";
+import type { GitOpsRef, GraphNode, Health } from "../types/graph";
 
 // Shared display vocabulary for the tree, graph, and details panel so a given
 // kind or health state always looks the same everywhere.
@@ -19,6 +19,11 @@ const KIND_ABBREV: Record<string, string> = {
   Service: "SVC",
   Ingress: "ING",
   NetworkPolicy: "NP",
+  Kustomization: "KS",
+  HelmRelease: "HR",
+  GitRepository: "GR",
+  OCIRepository: "OR",
+  HelmRepository: "HRP",
   ConfigMap: "CM",
   Secret: "SEC",
   ServiceAccount: "SA",
@@ -46,6 +51,11 @@ const KIND_ORDER = [
   "Job",
   "ReplicaSet",
   "Pod",
+  "Kustomization",
+  "HelmRelease",
+  "GitRepository",
+  "OCIRepository",
+  "HelmRepository",
   "Service",
   "Ingress",
   "NetworkPolicy",
@@ -113,6 +123,8 @@ export const EDGE_STYLE: Record<string, { stroke: string }> = {
   binds: { stroke: "#0d9488" }, // teal
   "scheduled-on": { stroke: "#06b6d4" }, // cyan
   "depends-on": { stroke: "#6366f1" }, // indigo
+  "managed-by": { stroke: "#d946ef" }, // fuchsia — GitOps
+  "sourced-from": { stroke: "#ec4899" }, // pink — GitOps
 };
 
 const INCOMING_LABEL: Record<string, string> = {
@@ -124,9 +136,23 @@ const INCOMING_LABEL: Record<string, string> = {
   binds: "bound by",
   "scheduled-on": "hosts",
   "depends-on": "depended on by",
+  "managed-by": "manages",
+  "sourced-from": "sources",
 };
 
 /** Label for an edge read from the target's side. */
 export function incomingEdgeLabel(kind: string): string {
   return INCOMING_LABEL[kind] ?? `${kind} ←`;
+}
+
+/**
+ * Node ID of the Flux object managing a resource — forward-constructed the
+ * same way the backend builds IDs, so the GitOps card can link to it.
+ */
+export function gitopsManagerId(ref: GitOpsRef): string {
+  const group =
+    ref.kind === "Kustomization"
+      ? "kustomize.toolkit.fluxcd.io"
+      : "helm.toolkit.fluxcd.io";
+  return `${group}/${ref.kind.toLowerCase()}/${ref.namespace}/${ref.name}`;
 }

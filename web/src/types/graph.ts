@@ -25,6 +25,26 @@ export interface GraphNode {
   synthetic?: boolean;
   /** Copy-paste command to fetch this object live. */
   kubectl?: string;
+  /** Set when a GitOps controller (Flux) manages this object. */
+  gitops?: GitOpsRef;
+  /** Clickable external references (e.g. a source repository). */
+  links?: Link[];
+}
+
+export interface GitOpsRef {
+  tool: string; // "flux"
+  kind: string; // "Kustomization" | "HelmRelease"
+  name: string;
+  namespace: string;
+  sourceRepo?: string;
+  sourcePath?: string;
+  revision?: string;
+  webURL?: string;
+}
+
+export interface Link {
+  label: string;
+  url: string;
 }
 
 export interface GraphEdge {

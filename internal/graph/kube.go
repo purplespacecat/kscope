@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// kubeClient bundles the typed clientset with metadata identifying which
-// cluster it talks to, so snapshots can be stamped with their origin.
+// kubeClient bundles the typed clientset (built-in kinds), the dynamic
+// client (CRDs — Flux today, generic CRDs in milestone 5) and metadata
+// identifying which cluster they talk to.
 type kubeClient struct {
 	clientset kubernetes.Interface
+	dynamic   dynamic.Interface
 	meta      ClusterMeta
 }
 
@@ -44,8 +47,13 @@ func newKubeClient() (*kubeClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create clientset: %w", err)
 	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create dynamic client: %w", err)
+	}
 	return &kubeClient{
 		clientset: cs,
+		dynamic:   dyn,
 		meta:      ClusterMeta{Context: raw.CurrentContext, Server: cfg.Host},
 	}, nil
 }

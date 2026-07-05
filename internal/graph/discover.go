@@ -13,7 +13,9 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -35,7 +37,7 @@ func Discover(ctx context.Context, scope Scope) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return discover(ctx, kc.clientset, kc.meta, scope)
+	return discover(ctx, kc.clientset, kc.dynamic, kc.meta, scope)
 }
 
 // ListNamespaces returns the namespace choices shown in the scope picker.
@@ -56,9 +58,10 @@ func ListNamespaces(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// discover is the testable core: it accepts any kubernetes.Interface, so unit
-// tests substitute a fake clientset instead of a live cluster.
-func discover(ctx context.Context, cs kubernetes.Interface, meta ClusterMeta, scope Scope) (Snapshot, error) {
+// discover is the testable core: it accepts any kubernetes.Interface (and
+// dynamic.Interface for CRD-backed passes — nil skips them), so unit tests
+// substitute fakes instead of a live cluster.
+func discover(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Interface, meta ClusterMeta, scope Scope) (Snapshot, error) {
 	start := time.Now()
 	b := &builder{
 		kubectx:   meta.Context,
@@ -70,6 +73,7 @@ func discover(ctx context.Context, cs kubernetes.Interface, meta ClusterMeta, sc
 		manifests: map[string]string{},
 		counts:    map[string]int{},
 		rawSCs:    map[string]storagev1.StorageClass{},
+		rawFlux:   map[string]*unstructured.Unstructured{},
 	}
 
 	// Server version is best-effort — a snapshot without it is still useful.
@@ -151,6 +155,10 @@ func discover(ctx context.Context, cs kubernetes.Interface, meta ClusterMeta, sc
 		b.persistentVolumeClaims(ctx, cs, ns)
 	}
 
+	// Flux GitOps objects (spec §4.5) — via the dynamic client because
+	// they're CRDs. Absent CRDs mean Flux isn't installed: skipped silently.
+	b.fluxObjects(ctx, cs.Discovery(), dyn, selected)
+
 	// Cluster-scoped storage is listed once but NOT pushed wholesale — only
 	// objects referenced by an in-scope PVC chain become nodes (§4.3), so a
 	// namespace-scoped invocation stays namespace-scoped.
@@ -178,8 +186,10 @@ func discover(ctx context.Context, cs kubernetes.Interface, meta ClusterMeta, sc
 	// resolution is a second pass over the complete set.
 	b.resolveParents()
 
-	// Cross-cutting relationships need the full node set too (an edge is only
-	// added when both endpoints exist), so they come last.
+	// Cross-cutting relationships need the full node set (an edge is only
+	// added when both endpoints exist), so they come last. GitOps
+	// back-references also walk every node to attach label-derived refs.
+	b.fluxBackrefs()
 	b.inferEdges()
 
 	return Snapshot{
@@ -219,6 +229,7 @@ type builder struct {
 	rawPVCs      []corev1.PersistentVolumeClaim
 	rawPVs       []corev1.PersistentVolume
 	rawSCs       map[string]storagev1.StorageClass
+	rawFlux      map[string]*unstructured.Unstructured // node ID → toolkit CR
 }
 
 func (b *builder) push(n Node, uid, ownerUID types.UID) {
