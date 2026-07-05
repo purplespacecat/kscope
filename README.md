@@ -62,8 +62,10 @@ Subsequent `kscope` server starts will pick up that snapshot on boot.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--port` | `8080` | HTTP listen port |
-| `--data-dir` | `./data` | directory holding `latest.json` |
+| `--data-dir` | `./data` | directory holding `latest.json` + `manifests.json` |
 | `--discover-namespaces` | `""` | one-shot mode: run discovery for these namespaces and exit |
+| `--include-infra` | `true` | one-shot mode: include cluster nodes + control-plane |
+| `--redact-extra` | `""` | extra dotted paths to redact in every manifest, e.g. `spec.password` |
 
 ## Status
 
@@ -71,4 +73,5 @@ Early development — building brick by brick, following `docs/spec-v1.md`:
 
 - **Milestone 1 (done):** real `client-go` discovery of core workloads (Deployments, StatefulSets, DaemonSets, ReplicaSets, Pods, Jobs, CronJobs) with the containment tree derived from ownerReferences; per-resource health rollups; tree + focused-graph UI; `kubectl` retrieval hints.
 - **Milestone 2 (done):** config/networking/storage discovery (ConfigMaps, Secrets, ServiceAccounts, Services, Ingresses, NetworkPolicies, PVC→PV→StorageClass) with inferred relationship edges (`mounts`, `references`, `uses`, `selects`, `exposes`, `binds`) drawn as a dashed overlay; redacted manifest capture (Secret values never touch disk, `--redact-extra` for site-specific fields) served per node; details panel with breadcrumb, clickable relationships and manifest viewer.
-- **Milestone 3 (next):** infra layer — cluster Nodes + control-plane components and `depends-on` edges.
+- **Milestone 3 (done):** infra layer — cluster Nodes (condition-based health incl. pressure/cordon), a logical control-plane (synthetic components on k3s, static-pod health mirroring on kubeadm), the `depends-on` spine (node → api-server → datastore), `scheduled-on` pod→node edges, and the `IncludeInfra` scope toggle.
+- **Milestone 4 (next):** Flux GitOps — toolkit CR discovery, label back-refs, Git source resolution + deep links.

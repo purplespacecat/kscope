@@ -111,6 +111,12 @@ func (b *builder) podEdges(p corev1.Pod) {
 		sa = "default" // what the API server defaults it to
 	}
 	b.addEdge(EdgeUses, podID, nodeID("", "ServiceAccount", p.Namespace, sa))
+
+	// Where the pod actually runs. Only lands when the infra layer is on —
+	// addEdge drops edges whose target isn't in the snapshot.
+	if p.Spec.NodeName != "" {
+		b.addEdge(EdgeScheduledOn, podID, nodeID("", "Node", "", p.Spec.NodeName))
+	}
 }
 
 // serviceEdges matches a Service's selector against in-scope pods.

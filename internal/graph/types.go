@@ -8,6 +8,9 @@ import "time"
 type Scope struct {
 	// Namespaces to include. Empty means "every namespace in the cluster".
 	Namespaces []string `json:"namespaces"`
+	// IncludeInfra adds the infrastructure layer: cluster Nodes, the logical
+	// control-plane components, and their depends-on/scheduled-on edges.
+	IncludeInfra bool `json:"includeInfra,omitempty"`
 }
 
 // Health is a coarse rollup of an object's status, computed at discovery time
@@ -37,7 +40,11 @@ type Node struct {
 	ParentID   string            `json:"parentId,omitempty"` // "" only for the cluster root
 	Labels     map[string]string `json:"labels,omitempty"`
 	Health     Health            `json:"health"`
-	Kubectl    string            `json:"kubectl,omitempty"` // copy-paste command to fetch this object live
+	// Synthetic marks logical nodes with no direct API object behind them
+	// (the cluster root, and control-plane components on k3s where the whole
+	// plane is one process). Rendered dashed in the UI.
+	Synthetic bool   `json:"synthetic,omitempty"`
+	Kubectl   string `json:"kubectl,omitempty"` // copy-paste command to fetch this object live
 }
 
 // Edge is a directed cross-cutting relationship between two nodes.
@@ -49,14 +56,16 @@ type Edge struct {
 	Kind   string `json:"kind"`
 }
 
-// Edge kinds (spec §3). GitOps and infra kinds arrive with milestones 3–4.
+// Edge kinds (spec §3). GitOps kinds arrive with milestone 4.
 const (
-	EdgeMounts     = "mounts"     // Pod → ConfigMap/Secret/PVC via volumes
-	EdgeReferences = "references" // Pod → ConfigMap/Secret via env/envFrom/imagePullSecrets
-	EdgeUses       = "uses"       // Pod → ServiceAccount
-	EdgeSelects    = "selects"    // Service/NetworkPolicy → Pod via label selector
-	EdgeExposes    = "exposes"    // Ingress → Service
-	EdgeBinds      = "binds"      // PVC → PV → StorageClass
+	EdgeMounts      = "mounts"       // Pod → ConfigMap/Secret/PVC via volumes
+	EdgeReferences  = "references"   // Pod → ConfigMap/Secret via env/envFrom/imagePullSecrets
+	EdgeUses        = "uses"         // Pod → ServiceAccount
+	EdgeSelects     = "selects"      // Service/NetworkPolicy → Pod via label selector
+	EdgeExposes     = "exposes"      // Ingress → Service
+	EdgeBinds       = "binds"        // PVC → PV → StorageClass
+	EdgeScheduledOn = "scheduled-on" // Pod → Node
+	EdgeDependsOn   = "depends-on"   // Node → api-server → datastore; infra spine
 )
 
 // ClusterMeta identifies where a snapshot came from.

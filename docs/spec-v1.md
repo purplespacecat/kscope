@@ -340,8 +340,11 @@ This spec grows both sides together.
    Deviations from plan: dangling out-of-scope references are dropped
    silently (source-node badge still TODO); manifests render as plain
    monospace (syntax highlighting deferred).
-3. **Infra layer** — nodes + control-plane (real vs synthetic), `depends-on`
-   edges, `IncludeInfra` scope toggle.
+3. **Infra layer** ✅ *(shipped)* — nodes + control-plane (real vs synthetic),
+   `depends-on` edges, `IncludeInfra` scope toggle. Component health mirrors
+   kubeadm static pods when present; on k3s components are synthetic and
+   healthy-by-reachability. CoreDNS/kubelet synthetic duplicates were skipped
+   (CoreDNS already appears as a real Deployment).
 4. **Flux GitOps** — toolkit discovery, label back-refs, source resolution,
    `WebURL` deep-links, GitOps card.
 5. **Generic CRDs** — dynamic CRD + instance discovery, `instance-of` edges,

@@ -3,6 +3,8 @@
 
 export interface Scope {
   namespaces: string[];
+  /** Adds cluster Nodes + logical control-plane to the discovery. */
+  includeInfra?: boolean;
 }
 
 export type Health = "healthy" | "warning" | "error" | "unknown";
@@ -19,6 +21,8 @@ export interface GraphNode {
   labels?: Record<string, string>;
   /** Absent on snapshots taken before milestone 1. */
   health?: Health;
+  /** Logical node with no API object behind it (cluster root, k3s control-plane). */
+  synthetic?: boolean;
   /** Copy-paste command to fetch this object live. */
   kubectl?: string;
 }
