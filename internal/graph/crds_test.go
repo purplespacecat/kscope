@@ -196,11 +196,78 @@ func TestConditionHealth_NoConditionsIsHealthy(t *testing.T) {
 	if got := conditionHealth(bare, "Ready"); got != HealthHealthy {
 		t.Fatalf("no-status health = %s, want healthy", got)
 	}
-	// Conditions present but not the sought type → honest unknown.
+	// Conditions present but none of the sought types nor a positive
+	// suffix → honest unknown.
 	other := ustr(map[string]any{
-		"status": map[string]any{"conditions": []any{map[string]any{"type": "Reconciled", "status": "True"}}},
+		"status": map[string]any{"conditions": []any{map[string]any{"type": "Degraded", "status": "False"}}},
 	})
-	if got := conditionHealth(other, "Ready"); got != HealthUnknown {
+	if got := conditionHealth(other, "Ready", "Available"); got != HealthUnknown {
 		t.Fatalf("other-conditions health = %s, want unknown", got)
+	}
+}
+
+func TestConditionHealth_PositiveSuffixFallback(t *testing.T) {
+	cases := []struct {
+		name     string
+		condType string
+		status   string
+		want     Health
+	}{
+		{"metallb valid", "poolReconcilerValid", "True", HealthHealthy},
+		{"suffix false is error", "configReconcilerValid", "False", HealthError},
+		{"loaded", "ConfigLoaded", "True", HealthHealthy},
+		// Polarity traps: lowercase/inverted forms must NOT match.
+		{"Invalid must not match Valid", "ConfigInvalid", "True", HealthUnknown},
+		{"NotReady must not match Ready", "NotReady", "True", HealthUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := ustr(map[string]any{
+				"status": map[string]any{"conditions": []any{
+					map[string]any{"type": tc.condType, "status": tc.status},
+				}},
+			})
+			if got := conditionHealth(u, "Ready", "Available", "Reconciled"); got != tc.want {
+				t.Fatalf("%s=%s → %s, want %s", tc.condType, tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConditionHealth_DialectCascade(t *testing.T) {
+	withConds := func(conds ...map[string]any) *unstructured.Unstructured {
+		list := make([]any, len(conds))
+		for i, c := range conds {
+			list[i] = c
+		}
+		return ustr(map[string]any{"status": map[string]any{"conditions": list}})
+	}
+	crVocab := []string{"Ready", "Available", "Reconciled"}
+
+	// prometheus-operator dialect: Available found via cascade.
+	prom := withConds(
+		map[string]any{"type": "Available", "status": "True"},
+		map[string]any{"type": "Reconciled", "status": "True"},
+	)
+	if got := conditionHealth(prom, crVocab...); got != HealthHealthy {
+		t.Fatalf("Available=True → %s, want healthy", got)
+	}
+
+	// A broken one: Available=False is an error even when Reconciled=True.
+	broken := withConds(
+		map[string]any{"type": "Available", "status": "False"},
+		map[string]any{"type": "Reconciled", "status": "True"},
+	)
+	if got := conditionHealth(broken, crVocab...); got != HealthError {
+		t.Fatalf("Available=False → %s, want error", got)
+	}
+
+	// Priority: Ready wins over Available when both are present.
+	both := withConds(
+		map[string]any{"type": "Available", "status": "True"},
+		map[string]any{"type": "Ready", "status": "False"},
+	)
+	if got := conditionHealth(both, crVocab...); got != HealthError {
+		t.Fatalf("Ready=False must outrank Available=True, got %s", got)
 	}
 }
