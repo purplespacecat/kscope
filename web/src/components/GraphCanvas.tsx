@@ -3,7 +3,9 @@ import {
   Background,
   Controls,
   MiniMap,
+  Panel,
   ReactFlow,
+  useReactFlow,
   type Edge as FlowEdge,
   type Node as FlowNode,
 } from "@xyflow/react";
@@ -483,6 +485,24 @@ function layout(
   return { flowNodes, flowEdges };
 }
 
+// Escape hatch for lost viewports: one click re-frames the whole graph.
+// (Needs the ReactFlow context, hence a child component inside <ReactFlow>.)
+function RecenterButton() {
+  const { fitView } = useReactFlow();
+  return (
+    <Panel position="top-right">
+      <button
+        type="button"
+        onClick={() => fitView({ padding: 0.1, duration: 300 })}
+        className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm hover:bg-slate-50"
+        title="Fit the whole graph back into view"
+      >
+        ⌖ Re-center
+      </button>
+    </Panel>
+  );
+}
+
 export function GraphCanvas({
   nodes,
   edges,
@@ -569,6 +589,10 @@ export function GraphCanvas({
         // fitView from actually fitting them.
         minZoom={0.04}
         maxZoom={1.25}
+        // kscope is a viewer: positions are computed, so dragging nodes is a
+        // foot-gun — the big translucent group containers read as background,
+        // and "panning" on one flings the entire grid off-screen.
+        nodesDraggable={false}
         onNodeClick={(_, n) => {
           const d = n.data as { raw?: GraphNode; groupToggle?: string };
           if (d.groupToggle) {
@@ -600,6 +624,7 @@ export function GraphCanvas({
       >
         <Background />
         <Controls />
+        <RecenterButton />
         {flowNodes.length > 15 && <MiniMap pannable zoomable />}
       </ReactFlow>
     </div>
