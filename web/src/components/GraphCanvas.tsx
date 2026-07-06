@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -11,7 +11,9 @@ import dagre from "@dagrejs/dagre";
 import type { GraphEdge, GraphNode } from "../types/graph";
 import {
   EDGE_STYLE,
+  HEALTH_DOT,
   HEALTH_HEX,
+  HEALTH_LABEL,
   INFRA_KINDS,
   health,
   kindAbbrev,
@@ -37,6 +39,9 @@ const WRAP_AT = 6;
 const GRID_GAP_X = 16;
 const GRID_GAP_Y = 24;
 const GRID_PAD = 16;
+
+// Dwell time before the hover tooltip (full untruncated name) appears.
+const HOVER_DELAY_MS = 3000;
 
 interface Layout {
   flowNodes: FlowNode[];
@@ -292,8 +297,63 @@ export function GraphCanvas({
     [nodes, edges, hiddenCounts, selectedId],
   );
 
+  // Hover-dwell tooltip: linger on a node for HOVER_DELAY_MS and the full
+  // (untruncated) identity appears — no click needed.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mousePos = useRef({ x: 0, y: 0 });
+  const [tip, setTip] = useState<{
+    node: GraphNode;
+    x: number;
+    y: number;
+    flip: boolean;
+  } | null>(null);
+
+  const clearTip = () => {
+    if (tipTimer.current) clearTimeout(tipTimer.current);
+    tipTimer.current = null;
+    setTip(null);
+  };
+  useEffect(() => clearTip, []); // clear pending timer on unmount
+
+  const trackMouse = (e: React.MouseEvent) => {
+    const r = wrapRef.current?.getBoundingClientRect();
+    mousePos.current = { x: e.clientX - (r?.left ?? 0), y: e.clientY - (r?.top ?? 0) };
+  };
+
   return (
-    <div className="h-full w-full">
+    <div ref={wrapRef} className="relative h-full w-full">
+      {tip && (
+        <div
+          className="pointer-events-none absolute z-50 max-w-xs rounded-lg bg-slate-900 px-3 py-2 shadow-xl"
+          style={{
+            left: tip.flip ? tip.x - 14 : tip.x + 14,
+            top: tip.y + 14,
+            transform: tip.flip ? "translateX(-100%)" : undefined,
+          }}
+        >
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`rounded px-1 text-[10px] font-semibold ${kindChipClass(tip.node.kind)}`}
+            >
+              {kindAbbrev(tip.node.kind)}
+            </span>
+            <span className="text-[10px] uppercase tracking-wide text-slate-400">
+              {tip.node.kind}
+            </span>
+          </div>
+          <div className="mt-1 break-all text-xs font-medium text-white">
+            {tip.node.name}
+          </div>
+          {tip.node.namespace && (
+            <div className="text-[10px] text-slate-400">ns/{tip.node.namespace}</div>
+          )}
+          <div className="mt-1 inline-flex items-center gap-1 text-[10px] text-slate-300">
+            <span className={`h-1.5 w-1.5 rounded-full ${HEALTH_DOT[health(tip.node)]}`} />
+            {HEALTH_LABEL[health(tip.node)]}
+          </div>
+        </div>
+      )}
       <ReactFlow
         // Remount when the focus root changes so fitView re-frames the new
         // subgraph — simpler than driving the viewport imperatively.
@@ -309,6 +369,19 @@ export function GraphCanvas({
           const raw = (n.data as { raw?: GraphNode }).raw;
           if (raw) onSelect(raw);
         }}
+        onNodeMouseEnter={(e, n) => {
+          const raw = (n.data as { raw?: GraphNode }).raw;
+          if (!raw) return; // grid containers have no identity of their own
+          trackMouse(e);
+          if (tipTimer.current) clearTimeout(tipTimer.current);
+          tipTimer.current = setTimeout(() => {
+            const { x, y } = mousePos.current;
+            const width = wrapRef.current?.clientWidth ?? Infinity;
+            setTip({ node: raw, x, y, flip: x > width - 340 });
+          }, HOVER_DELAY_MS);
+        }}
+        onNodeMouseMove={trackMouse}
+        onNodeMouseLeave={clearTip}
         onPaneClick={() => onSelect(null)}
       >
         <Background />
