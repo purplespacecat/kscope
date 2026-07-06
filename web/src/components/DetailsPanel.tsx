@@ -8,6 +8,7 @@ import {
   health,
   incomingEdgeLabel,
   kindAbbrev,
+  kindChipClass,
 } from "../lib/display";
 
 interface Props {
@@ -214,7 +215,9 @@ export function DetailsPanel({
                   <span className="w-24 shrink-0 text-[10px] uppercase tracking-wide text-slate-400">
                     {r.label}
                   </span>
-                  <span className="shrink-0 rounded bg-slate-100 px-1 text-[10px] font-semibold text-slate-500">
+                  <span
+                    className={`shrink-0 rounded px-1 text-[10px] font-semibold ${kindChipClass(r.other.kind)}`}
+                  >
                     {kindAbbrev(r.other.kind)}
                   </span>
                   <span className="min-w-0 flex-1 truncate text-slate-700">
