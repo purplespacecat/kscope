@@ -18,6 +18,7 @@ import {
   health,
   kindAbbrev,
   kindChipClass,
+  kindPlural,
   kindRank,
 } from "../lib/display";
 
@@ -33,12 +34,18 @@ interface Props {
 const NODE_W = 200;
 const NODE_H = 56;
 
-// Leaf children beyond this count wrap into a grid instead of one endless
-// dagre rank — the fix for "the view is too wide".
+// Grid geometry for grouped/wrapped children.
 const WRAP_AT = 6;
 const GRID_GAP_X = 16;
 const GRID_GAP_Y = 24;
 const GRID_PAD = 16;
+
+// A parent's leaf children of the same kind fold into an expandable
+// kind-group once there are at least this many of them.
+const GROUP_AT = 3;
+
+// Namespaces are the primary drill path — never hide them behind a group.
+const GROUP_EXEMPT = new Set(["Namespace"]);
 
 // Dwell time before the hover tooltip (full untruncated name) appears.
 const HOVER_DELAY_MS = 3000;
@@ -48,19 +55,42 @@ interface Layout {
   flowEdges: FlowEdge[];
 }
 
-// Layered "iceberg" layout:
-//   - infra (control-plane, machines) ranks ABOVE the cluster node — dagre
-//     ranks by edge direction, so infra containment edges are flipped for
-//     layout (and rendered child→parent so the line hangs naturally);
-//   - content (namespaces, crds, storage, ...) ranks below;
-//   - a parent's leaf children beyond WRAP_AT are laid out as a wrapped grid;
-//     an invisible placeholder node reserves the grid's rectangle in dagre so
-//     siblings don't collide.
+function gridSize(items: number): { w: number; h: number } {
+  const cols = Math.min(WRAP_AT, items);
+  const rows = Math.ceil(items / WRAP_AT);
+  return {
+    w: cols * NODE_W + (cols - 1) * GRID_GAP_X + 2 * GRID_PAD,
+    h: rows * NODE_H + (rows - 1) * GRID_GAP_Y + 2 * GRID_PAD,
+  };
+}
+
+function gridSlot(i: number, total: number, boxW: number): { x: number; y: number } {
+  const row = Math.floor(i / WRAP_AT);
+  const col = i % WRAP_AT;
+  const inRow = Math.min(WRAP_AT, total - row * WRAP_AT);
+  const rowLeft =
+    GRID_PAD + (boxW - 2 * GRID_PAD - (inRow * NODE_W + (inRow - 1) * GRID_GAP_X)) / 2;
+  return {
+    x: rowLeft + col * (NODE_W + GRID_GAP_X),
+    y: GRID_PAD + row * (NODE_H + GRID_GAP_Y),
+  };
+}
+
+// Layered "iceberg" layout with kind-grouping:
+//   - infra (control-plane, machines) ranks ABOVE the cluster node, content
+//     below;
+//   - a parent's leaf children fold by kind into expandable groups
+//     (collapsed: one card with a count; expanded: a container holding a
+//     header card plus the wrapped member grid);
+//   - leftover ungrouped leaves beyond WRAP_AT wrap into a plain grid;
+//   - relationship edges to packed members are dimmed, and hidden entirely
+//     while their group is collapsed.
 function layout(
   nodes: GraphNode[],
   edges: GraphEdge[],
   hiddenCounts: Map<string, number> | undefined,
   selectedId: string | null,
+  expandedGroups: Set<string>,
 ): Layout {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const g = new dagre.graphlib.Graph();
@@ -80,39 +110,127 @@ function layout(
     else childIds.set(e.source, [e.target]);
   }
 
-  // Plan wrapped grids.
-  const gridLeaves = new Map<string, string[]>(); // placeholder id → ordered leaf ids
-  const inGrid = new Set<string>();
+  const byKindThenName = (a: string, b: string) => {
+    const na = byId.get(a)!;
+    const nb = byId.get(b)!;
+    return kindRank(na.kind) - kindRank(nb.kind) || na.name.localeCompare(nb.name);
+  };
+
+  type Slot =
+    | { t: "n"; id: string }
+    | { t: "g"; gid: string; kind: string; count: number };
+  interface Container {
+    id: string;
+    parent: string;
+    members: Slot[];
+    header?: { kind: string; count: number };
+    w: number;
+    h: number;
+  }
+  const containers: Container[] = [];
+  const collapsedCards: { id: string; parent: string; kind: string; count: number }[] =
+    [];
+  const memberOf = new Map<string, string>(); // member id → container id
+  const hiddenMembers = new Set<string>(); // members of collapsed groups
+  const packed = new Set<string>(); // nodes not laid out by dagre directly
+
   for (const [parent, kids] of childIds) {
     const leaves = kids.filter((k) => {
       const n = byId.get(k);
       return n && !hasChildren.has(k) && !INFRA_KINDS.has(n.kind);
     });
-    if (leaves.length <= WRAP_AT) continue;
-    leaves.sort((a, b) => {
-      const na = byId.get(a)!;
-      const nb = byId.get(b)!;
-      return kindRank(na.kind) - kindRank(nb.kind) || na.name.localeCompare(nb.name);
+    if (leaves.length === 0) continue;
+
+    const buckets = new Map<string, string[]>();
+    for (const l of leaves) {
+      const kind = byId.get(l)!.kind;
+      const list = buckets.get(kind);
+      if (list) list.push(l);
+      else buckets.set(kind, [l]);
+    }
+
+    const singles: string[] = [];
+    const collapsedHere: { gid: string; kind: string; count: number }[] = [];
+    for (const [kind, members] of buckets) {
+      if (members.length < GROUP_AT || GROUP_EXEMPT.has(kind)) {
+        singles.push(...members);
+        continue;
+      }
+      members.sort(byKindThenName);
+      const gid = `__kg__${parent}__${kind}`;
+      for (const m of members) packed.add(m);
+      if (expandedGroups.has(gid)) {
+        // Expanded groups are their own boxes, siblings of the mixed grid.
+        const { w, h } = gridSize(members.length + 1); // +1: header card slot
+        containers.push({
+          id: gid,
+          parent,
+          members: members.map((id) => ({ t: "n", id }) as Slot),
+          header: { kind, count: members.length },
+          w,
+          h,
+        });
+        for (const m of members) memberOf.set(m, gid);
+        g.setNode(gid, { width: w, height: h });
+        g.setEdge(parent, gid);
+      } else {
+        collapsedHere.push({ gid, kind, count: members.length });
+        for (const m of members) hiddenMembers.add(m);
+      }
+    }
+
+    // Collapsed kind-cards and singleton leaves share one mixed grid — a
+    // wide row of cards is the very thing being fixed.
+    const mixed: Slot[] = [
+      ...collapsedHere.map(
+        (c) => ({ t: "g", gid: c.gid, kind: c.kind, count: c.count }) as Slot,
+      ),
+      ...singles.map((id) => ({ t: "n", id }) as Slot),
+    ];
+    const slotKey = (s: Slot) =>
+      s.t === "n"
+        ? { kind: byId.get(s.id)!.kind, name: byId.get(s.id)!.name }
+        : { kind: s.kind, name: kindPlural(s.kind) };
+    mixed.sort((a, b) => {
+      const ka = slotKey(a);
+      const kb = slotKey(b);
+      return kindRank(ka.kind) - kindRank(kb.kind) || ka.name.localeCompare(kb.name);
     });
-    const rows = Math.ceil(leaves.length / WRAP_AT);
-    const phId = `__grid__${parent}`;
-    g.setNode(phId, {
-      width: WRAP_AT * NODE_W + (WRAP_AT - 1) * GRID_GAP_X + 2 * GRID_PAD,
-      height: rows * NODE_H + (rows - 1) * GRID_GAP_Y + 2 * GRID_PAD,
-    });
-    g.setEdge(parent, phId);
-    gridLeaves.set(phId, leaves);
-    for (const l of leaves) inGrid.add(l);
+
+    if (mixed.length > WRAP_AT) {
+      const gid = `__grid__${parent}`;
+      const { w, h } = gridSize(mixed.length);
+      containers.push({ id: gid, parent, members: mixed, w, h });
+      for (const s of mixed) {
+        if (s.t === "n") {
+          packed.add(s.id);
+          memberOf.set(s.id, gid);
+        } else {
+          packed.add(s.gid);
+        }
+      }
+      g.setNode(gid, { width: w, height: h });
+      g.setEdge(parent, gid);
+    } else {
+      for (const s of mixed) {
+        if (s.t === "g") {
+          collapsedCards.push({ id: s.gid, parent, kind: s.kind, count: s.count });
+          g.setNode(s.gid, { width: NODE_W, height: NODE_H });
+          g.setEdge(parent, s.gid);
+        }
+        // plain singles stay ordinary dagre children (not packed)
+      }
+    }
   }
 
   for (const n of nodes) {
-    if (!inGrid.has(n.id)) g.setNode(n.id, { width: NODE_W, height: NODE_H });
+    if (!packed.has(n.id)) g.setNode(n.id, { width: NODE_W, height: NODE_H });
   }
 
   // Containment drives the layout; infra edges are flipped so those subtrees
   // grow upward from the cluster.
   for (const e of contains) {
-    if (inGrid.has(e.target)) continue; // grid members are placed manually
+    if (packed.has(e.target)) continue; // grouped/gridded: via container edge
     const child = byId.get(e.target);
     if (child && INFRA_KINDS.has(child.kind)) g.setEdge(e.target, e.source);
     else g.setEdge(e.source, e.target);
@@ -126,7 +244,7 @@ function layout(
     anchored.add(e.target);
   }
   for (const e of overlay) {
-    if (inGrid.has(e.source) || inGrid.has(e.target)) continue;
+    if (packed.has(e.source) || packed.has(e.target)) continue;
     if (!anchored.has(e.source) || !anchored.has(e.target)) {
       g.setEdge(e.source, e.target);
     }
@@ -134,61 +252,27 @@ function layout(
 
   dagre.layout(g);
 
-  // Positions: dagre for regular nodes, computed grid slots for wrapped ones
-  // (each partial row centered within the placeholder rectangle).
   const pos = new Map<string, { x: number; y: number }>();
   for (const n of nodes) {
-    if (inGrid.has(n.id)) continue;
+    if (packed.has(n.id)) continue;
     const p = g.node(n.id);
     if (p) pos.set(n.id, { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 });
   }
-  // Grid members live INSIDE a rendered group container (one containment
-  // edge into the box instead of one per leaf); positions are relative.
-  const gridParentOf = new Map<string, string>();
-  const groupNodes: FlowNode[] = [];
-  for (const [phId, leaves] of gridLeaves) {
-    const ph = g.node(phId);
-    if (!ph) continue;
-    groupNodes.push({
-      id: phId,
-      position: { x: ph.x - ph.width / 2, y: ph.y - ph.height / 2 },
-      data: { label: null },
-      selectable: false,
-      style: {
-        width: ph.width,
-        height: ph.height,
-        background: "rgba(148,163,184,0.07)",
-        border: "1px dashed #e2e8f0",
-        borderRadius: 12,
-      },
-    });
-    leaves.forEach((id, i) => {
-      const row = Math.floor(i / WRAP_AT);
-      const col = i % WRAP_AT;
-      const inRow = Math.min(WRAP_AT, leaves.length - row * WRAP_AT);
-      const rowLeft =
-        GRID_PAD +
-        (ph.width - 2 * GRID_PAD - (inRow * NODE_W + (inRow - 1) * GRID_GAP_X)) / 2;
-      gridParentOf.set(id, phId);
-      pos.set(id, {
-        x: rowLeft + col * (NODE_W + GRID_GAP_X),
-        y: GRID_PAD + row * (NODE_H + GRID_GAP_Y),
-      });
-    });
-  }
 
-  const flowNodes: FlowNode[] = [...groupNodes];
-  for (const n of nodes) {
-    const p = pos.get(n.id);
-    if (!p) continue;
-    const gridParent = gridParentOf.get(n.id);
+  const flowNodes: FlowNode[] = [];
+
+  const nodeCard = (
+    n: GraphNode,
+    p: { x: number; y: number },
+    container?: string,
+  ): FlowNode => {
     const hex = HEALTH_HEX[health(n)];
     const isSelected = n.id === selectedId;
     const hiddenKids = hiddenCounts?.get(n.id) ?? 0;
-    flowNodes.push({
+    return {
       id: n.id,
       position: p,
-      ...(gridParent ? { parentId: gridParent, extent: "parent" as const } : {}),
+      ...(container ? { parentId: container, extent: "parent" as const } : {}),
       data: {
         label: (
           <div className="flex w-full items-center gap-2 text-left">
@@ -227,8 +311,6 @@ function layout(
         width: NODE_W,
         padding: 8,
         borderRadius: 8,
-        // Health shows as a left accent stripe; selection as a blue ring.
-        // Synthetic (logical) nodes are dashed — there's no API object there.
         border: isSelected
           ? "2px solid #3b82f6"
           : `1px ${n.synthetic ? "dashed" : "solid"} #cbd5e1`,
@@ -238,29 +320,145 @@ function layout(
         background: "#fff",
         fontSize: 12,
       },
+    };
+  };
+
+  const groupHeaderCard = (
+    id: string,
+    gid: string,
+    kind: string,
+    count: number,
+    expanded: boolean,
+    p: { x: number; y: number },
+    container?: string,
+  ): FlowNode => ({
+    id,
+    position: p,
+    ...(container ? { parentId: container, extent: "parent" as const } : {}),
+    data: {
+      label: (
+        <div className="flex w-full items-center gap-2 text-left">
+          <span
+            className={`shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold ${kindChipClass(kind)}`}
+          >
+            {kindAbbrev(kind)}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-xs font-medium text-slate-900">
+              {kindPlural(kind)}
+            </span>
+            <span className="block text-[10px] text-slate-400">
+              {expanded ? "click to collapse" : "click to expand"}
+            </span>
+          </span>
+          <span className="shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600">
+            {count}
+          </span>
+          <span className="shrink-0 text-[10px] text-slate-400">
+            {expanded ? "▾" : "▸"}
+          </span>
+        </div>
+      ),
+      groupToggle: gid,
+    },
+    style: {
+      width: NODE_W,
+      padding: 8,
+      borderRadius: 8,
+      border: "1px dashed #94a3b8",
+      background: "#f8fafc",
+      fontSize: 12,
+    },
+  });
+
+  // Containers (expanded kind-groups + residual grids) and their members.
+  for (const c of containers) {
+    const ph = g.node(c.id);
+    if (!ph) continue;
+    flowNodes.push({
+      id: c.id,
+      position: { x: ph.x - c.w / 2, y: ph.y - c.h / 2 },
+      data: c.header ? { groupToggle: c.id } : { label: null },
+      style: {
+        width: c.w,
+        height: c.h,
+        background: "rgba(148,163,184,0.07)",
+        border: "1px dashed #e2e8f0",
+        borderRadius: 12,
+      },
     });
+    const total = c.members.length + (c.header ? 1 : 0);
+    let slot = 0;
+    if (c.header) {
+      flowNodes.push(
+        groupHeaderCard(
+          `${c.id}__h`,
+          c.id,
+          c.header.kind,
+          c.header.count,
+          true,
+          gridSlot(slot++, total, c.w),
+          c.id,
+        ),
+      );
+    }
+    for (const m of c.members) {
+      const p = gridSlot(slot++, total, c.w);
+      if (m.t === "n") {
+        const n = byId.get(m.id);
+        if (n) flowNodes.push(nodeCard(n, p, c.id));
+      } else {
+        flowNodes.push(groupHeaderCard(m.gid, m.gid, m.kind, m.count, false, p, c.id));
+      }
+    }
+  }
+
+  // Collapsed kind-group cards.
+  for (const cc of collapsedCards) {
+    const p = g.node(cc.id);
+    if (!p) continue;
+    flowNodes.push(
+      groupHeaderCard(cc.id, cc.id, cc.kind, cc.count, false, {
+        x: p.x - NODE_W / 2,
+        y: p.y - NODE_H / 2,
+      }),
+    );
+  }
+
+  // Regular dagre-placed nodes.
+  for (const n of nodes) {
+    const p = pos.get(n.id);
+    if (p) flowNodes.push(nodeCard(n, p));
   }
 
   const flowEdges: FlowEdge[] = [];
-  for (const [phId] of gridLeaves) {
-    // One containment edge into the box replaces one edge per grid member.
-    const parent = phId.slice("__grid__".length);
+  for (const c of containers) {
     flowEdges.push({
-      id: `${parent}->${phId}`,
-      source: parent,
-      target: phId,
+      id: `${c.parent}->${c.id}`,
+      source: c.parent,
+      target: c.id,
+      style: { stroke: "#cbd5e1" },
+    });
+  }
+  for (const cc of collapsedCards) {
+    flowEdges.push({
+      id: `${cc.parent}->${cc.id}`,
+      source: cc.parent,
+      target: cc.id,
       style: { stroke: "#cbd5e1" },
     });
   }
   for (const e of edges) {
     const rel = EDGE_STYLE[e.kind];
-    if (e.kind === "contains" && inGrid.has(e.target)) continue; // → group edge
-    // Wiring that touches grid members stays visible (an orphaned ConfigMap
-    // should LOOK different from a wired one) but is dimmed and unlabeled
-    // unless it touches the selection — signal without the spaghetti.
+    if (e.kind === "contains" && packed.has(e.target)) continue; // via container edge
+    // Members of collapsed groups aren't rendered — neither is their wiring.
+    if (hiddenMembers.has(e.source) || hiddenMembers.has(e.target)) continue;
+    // Wiring that touches packed members stays visible (orphans should LOOK
+    // different from wired resources) but dimmed and unlabeled unless it
+    // touches the selection.
     const dimmed =
       !!rel &&
-      (inGrid.has(e.source) || inGrid.has(e.target)) &&
+      (memberOf.has(e.source) || memberOf.has(e.target)) &&
       e.source !== selectedId &&
       e.target !== selectedId;
     const child = byId.get(e.target);
@@ -274,7 +472,7 @@ function layout(
       label: e.kind === "contains" || dimmed ? undefined : e.kind,
       labelStyle: { fontSize: 10, fill: rel?.stroke ?? "#64748b" },
       // Orthogonal routing for relationship edges — bezier curves between
-      // same-rank siblings (e.g. scheduler → api-server) loop unpleasantly.
+      // same-rank siblings loop unpleasantly.
       type: rel ? "smoothstep" : undefined,
       style: rel
         ? { stroke: rel.stroke, strokeDasharray: "6 3", opacity: dimmed ? 0.3 : 1 }
@@ -292,9 +490,13 @@ export function GraphCanvas({
   selectedId,
   onSelect,
 }: Props) {
+  // Expanded kind-groups, keyed `__kg__<parent>__<kind>` so state survives
+  // refocusing between views.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
   const { flowNodes, flowEdges } = useMemo(
-    () => layout(nodes, edges, hiddenCounts, selectedId),
-    [nodes, edges, hiddenCounts, selectedId],
+    () => layout(nodes, edges, hiddenCounts, selectedId, expandedGroups),
+    [nodes, edges, hiddenCounts, selectedId, expandedGroups],
   );
 
   // Hover-dwell tooltip: linger on a node for HOVER_DELAY_MS and the full
@@ -349,7 +551,9 @@ export function GraphCanvas({
             <div className="text-[10px] text-slate-400">ns/{tip.node.namespace}</div>
           )}
           <div className="mt-1 inline-flex items-center gap-1 text-[10px] text-slate-300">
-            <span className={`h-1.5 w-1.5 rounded-full ${HEALTH_DOT[health(tip.node)]}`} />
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${HEALTH_DOT[health(tip.node)]}`}
+            />
             {HEALTH_LABEL[health(tip.node)]}
           </div>
         </div>
@@ -366,12 +570,22 @@ export function GraphCanvas({
         minZoom={0.04}
         maxZoom={1.25}
         onNodeClick={(_, n) => {
-          const raw = (n.data as { raw?: GraphNode }).raw;
-          if (raw) onSelect(raw);
+          const d = n.data as { raw?: GraphNode; groupToggle?: string };
+          if (d.groupToggle) {
+            const gid = d.groupToggle;
+            setExpandedGroups((prev) => {
+              const next = new Set(prev);
+              if (next.has(gid)) next.delete(gid);
+              else next.add(gid);
+              return next;
+            });
+            return;
+          }
+          if (d.raw) onSelect(d.raw);
         }}
         onNodeMouseEnter={(e, n) => {
           const raw = (n.data as { raw?: GraphNode }).raw;
-          if (!raw) return; // grid containers have no identity of their own
+          if (!raw) return; // group cards/containers have no single identity
           trackMouse(e);
           if (tipTimer.current) clearTimeout(tipTimer.current);
           tipTimer.current = setTimeout(() => {

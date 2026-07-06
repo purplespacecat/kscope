@@ -80,6 +80,20 @@ export function kindChipClass(kind: string): string {
   return KIND_CHIP[kind] ?? "bg-lime-50 text-lime-700";
 }
 
+const KIND_PLURAL: Record<string, string> = {
+  NetworkPolicy: "NetworkPolicies",
+  Ingress: "Ingresses",
+  StorageClass: "StorageClasses",
+  HelmRepository: "HelmRepositories",
+  GitRepository: "GitRepositories",
+  OCIRepository: "OCIRepositories",
+};
+
+/** Plural display form for kind-group headers. */
+export function kindPlural(kind: string): string {
+  return KIND_PLURAL[kind] ?? `${kind}s`;
+}
+
 // Order children the way you'd scan a namespace: workloads first, their
 // machinery after, then networking, config, and storage.
 const KIND_ORDER = [
