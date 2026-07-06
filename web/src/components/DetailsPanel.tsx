@@ -9,6 +9,7 @@ import {
   incomingEdgeLabel,
   kindAbbrev,
   kindChipClass,
+  kindDocsUrl,
 } from "../lib/display";
 
 interface Props {
@@ -66,6 +67,9 @@ export function DetailsPanel({
 
   if (!node) return null;
   const labels = Object.entries(node.labels ?? {});
+  // Official docs for the kind, ahead of any node-specific links (repos etc.).
+  const docsLink = kindDocsUrl(node.kind, node.name);
+  const links = [...(docsLink ? [docsLink] : []), ...(node.links ?? [])];
 
   return (
     <aside className="flex h-full w-96 flex-col border-l border-slate-200 bg-white">
@@ -271,11 +275,11 @@ export function DetailsPanel({
           </section>
         )}
 
-        {node.links && node.links.length > 0 && (
+        {links.length > 0 && (
           <section>
             <SectionTitle>Links</SectionTitle>
             <div className="space-y-0.5 text-xs">
-              {node.links.map((l) => (
+              {links.map((l) => (
                 <a
                   key={l.url}
                   href={l.url}
