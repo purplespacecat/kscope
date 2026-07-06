@@ -1,4 +1,4 @@
-import type { GitOpsRef, GraphNode, Health } from "../types/graph";
+import type { GitOpsRef, GraphNode, Health, Link } from "../types/graph";
 
 // Shared display vocabulary for the tree, graph, and details panel so a given
 // kind or health state always looks the same everywhere.
@@ -78,6 +78,89 @@ const KIND_CHIP: Record<string, string> = {
 /** Chip colors for a kind; unknown kinds are custom resources → lime. */
 export function kindChipClass(kind: string): string {
   return KIND_CHIP[kind] ?? "bg-lime-50 text-lime-700";
+}
+
+// Official documentation per kind: kubernetes.io for built-ins, project docs
+// for well-known operators. Frontend-only lookup — no snapshot data involved.
+const K8S = "https://kubernetes.io/docs/concepts";
+const KIND_DOCS: Record<string, string> = {
+  Cluster: `${K8S}/overview/components/`,
+  ControlPlane: `${K8S}/architecture/`,
+  Node: `${K8S}/architecture/nodes/`,
+  Namespace: `${K8S}/overview/working-with-objects/namespaces/`,
+  Deployment: `${K8S}/workloads/controllers/deployment/`,
+  ReplicaSet: `${K8S}/workloads/controllers/replicaset/`,
+  StatefulSet: `${K8S}/workloads/controllers/statefulset/`,
+  DaemonSet: `${K8S}/workloads/controllers/daemonset/`,
+  Job: `${K8S}/workloads/controllers/job/`,
+  CronJob: `${K8S}/workloads/controllers/cron-jobs/`,
+  Pod: `${K8S}/workloads/pods/`,
+  Service: `${K8S}/services-networking/service/`,
+  Ingress: `${K8S}/services-networking/ingress/`,
+  NetworkPolicy: `${K8S}/services-networking/network-policies/`,
+  ConfigMap: `${K8S}/configuration/configmap/`,
+  Secret: `${K8S}/configuration/secret/`,
+  ServiceAccount: `${K8S}/security/service-accounts/`,
+  PersistentVolumeClaim: `${K8S}/storage/persistent-volumes/`,
+  PersistentVolume: `${K8S}/storage/persistent-volumes/`,
+  StorageClass: `${K8S}/storage/storage-classes/`,
+  StorageGroup: `${K8S}/storage/persistent-volumes/`,
+  CRDGroup: `${K8S}/extend-kubernetes/api-extension/custom-resources/`,
+  CustomResourceDefinition: `${K8S}/extend-kubernetes/api-extension/custom-resources/`,
+  Kustomization: "https://fluxcd.io/flux/components/kustomize/kustomizations/",
+  HelmRelease: "https://fluxcd.io/flux/components/helm/helmreleases/",
+  GitRepository: "https://fluxcd.io/flux/components/source/gitrepositories/",
+  OCIRepository: "https://fluxcd.io/flux/components/source/ocirepositories/",
+  HelmRepository: "https://fluxcd.io/flux/components/source/helmrepositories/",
+  Certificate: "https://cert-manager.io/docs/usage/certificate/",
+  CertificateRequest: "https://cert-manager.io/docs/concepts/certificaterequest/",
+  ClusterIssuer: "https://cert-manager.io/docs/configuration/",
+  Issuer: "https://cert-manager.io/docs/configuration/",
+  ServiceMonitor: "https://prometheus-operator.dev/docs/",
+  PodMonitor: "https://prometheus-operator.dev/docs/",
+  PrometheusRule: "https://prometheus-operator.dev/docs/",
+  Prometheus: "https://prometheus-operator.dev/docs/",
+  Alertmanager: "https://prometheus-operator.dev/docs/",
+  IPAddressPool: "https://metallb.io/configuration/",
+  L2Advertisement: "https://metallb.io/configuration/",
+  BGPPeer: "https://metallb.io/configuration/",
+  BGPAdvertisement: "https://metallb.io/configuration/",
+  HelmChart: "https://docs.k3s.io/helm",
+  HelmChartConfig: "https://docs.k3s.io/helm",
+  Addon: "https://docs.k3s.io/installation/packaged-components",
+};
+
+// Control-plane components share the kind — the name picks the docs section.
+const COMPONENT_DOCS: Record<string, string> = {
+  "api-server": `${K8S}/architecture/#kube-apiserver`,
+  etcd: `${K8S}/architecture/#etcd`,
+  scheduler: `${K8S}/architecture/#kube-scheduler`,
+  "controller-manager": `${K8S}/architecture/#kube-controller-manager`,
+};
+
+/** Official docs link for a node's kind, when one is known. */
+export function kindDocsUrl(kind: string, name?: string): Link | null {
+  if (kind === "Component" && name) {
+    if (name.includes("kine")) {
+      return { label: "k3s datastore docs", url: "https://docs.k3s.io/datastore" };
+    }
+    const url = COMPONENT_DOCS[name];
+    return url ? { label: "Kubernetes docs", url } : null;
+  }
+  const url = KIND_DOCS[kind];
+  if (!url) return null;
+  const label = url.includes("fluxcd.io")
+    ? "Flux docs"
+    : url.includes("cert-manager.io")
+      ? "cert-manager docs"
+      : url.includes("prometheus-operator")
+        ? "prometheus-operator docs"
+        : url.includes("metallb.io")
+          ? "MetalLB docs"
+          : url.includes("k3s.io")
+            ? "k3s docs"
+            : "Kubernetes docs";
+  return { label, url };
 }
 
 const KIND_PLURAL: Record<string, string> = {
