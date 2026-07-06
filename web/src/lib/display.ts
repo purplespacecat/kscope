@@ -10,6 +10,7 @@ const KIND_ABBREV: Record<string, string> = {
   Node: "NO",
   CRDGroup: "CRDS",
   CustomResourceDefinition: "CRD",
+  StorageGroup: "STG",
   Namespace: "NS",
   Deployment: "D",
   StatefulSet: "STS",
@@ -47,6 +48,7 @@ const KIND_ORDER = [
   "Node",
   "CRDGroup",
   "CustomResourceDefinition",
+  "StorageGroup",
   "Namespace",
   "Deployment",
   "StatefulSet",
@@ -80,6 +82,12 @@ export function kindRank(kind: string): number {
 export function health(n: GraphNode): Health {
   return n.health ?? "unknown";
 }
+
+/**
+ * Kinds that are infrastructure the cluster RUNS ON (vs content it hosts).
+ * The graph ranks these above the cluster node — the "iceberg" layout.
+ */
+export const INFRA_KINDS = new Set(["ControlPlane", "Component", "Node"]);
 
 // Severity ranking for rollups: a parent surfaces the worst health found in
 // its subtree so problems are visible without expanding everything.
