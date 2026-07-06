@@ -15,6 +15,7 @@ import {
   INFRA_KINDS,
   health,
   kindAbbrev,
+  kindChipClass,
   kindRank,
 } from "../lib/display";
 
@@ -186,7 +187,9 @@ function layout(
       data: {
         label: (
           <div className="flex w-full items-center gap-2 text-left">
-            <span className="shrink-0 rounded bg-slate-100 px-1 py-0.5 text-[10px] font-semibold text-slate-500">
+            <span
+              className={`shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold ${kindChipClass(n.kind)}`}
+            >
               {kindAbbrev(n.kind)}
             </span>
             <span className="min-w-0 flex-1">
@@ -247,16 +250,14 @@ function layout(
   for (const e of edges) {
     const rel = EDGE_STYLE[e.kind];
     if (e.kind === "contains" && inGrid.has(e.target)) continue; // → group edge
-    if (
-      rel &&
+    // Wiring that touches grid members stays visible (an orphaned ConfigMap
+    // should LOOK different from a wired one) but is dimmed and unlabeled
+    // unless it touches the selection — signal without the spaghetti.
+    const dimmed =
+      !!rel &&
       (inGrid.has(e.source) || inGrid.has(e.target)) &&
       e.source !== selectedId &&
-      e.target !== selectedId
-    ) {
-      // Wiring between packed grid leaves reads as spaghetti; it is one
-      // click away (select the leaf) rather than drawn en masse.
-      continue;
-    }
+      e.target !== selectedId;
     const child = byId.get(e.target);
     // Infra containment renders child→parent so the line hangs from the
     // upper (infra) node down into the cluster instead of looping around.
@@ -265,13 +266,13 @@ function layout(
       id: e.id,
       source: flip ? e.target : e.source,
       target: flip ? e.source : e.target,
-      label: e.kind === "contains" ? undefined : e.kind,
+      label: e.kind === "contains" || dimmed ? undefined : e.kind,
       labelStyle: { fontSize: 10, fill: rel?.stroke ?? "#64748b" },
       // Orthogonal routing for relationship edges — bezier curves between
       // same-rank siblings (e.g. scheduler → api-server) loop unpleasantly.
       type: rel ? "smoothstep" : undefined,
       style: rel
-        ? { stroke: rel.stroke, strokeDasharray: "6 3" }
+        ? { stroke: rel.stroke, strokeDasharray: "6 3", opacity: dimmed ? 0.3 : 1 }
         : { stroke: "#cbd5e1" },
     });
   }

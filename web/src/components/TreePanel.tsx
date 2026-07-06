@@ -4,6 +4,7 @@ import {
   HEALTH_DOT,
   health,
   kindAbbrev,
+  kindChipClass,
   kindRank,
   worseOf,
 } from "../lib/display";
@@ -146,7 +147,9 @@ export function TreePanel({ nodes, selectedId, onSelect }: Props) {
               <path d="M1 0 L7 4 L1 8 Z" />
             </svg>
           </button>
-          <span className="w-9 shrink-0 rounded bg-slate-100 px-1 text-center text-[10px] font-semibold text-slate-500">
+          <span
+            className={`w-9 shrink-0 rounded px-1 text-center text-[10px] font-semibold ${kindChipClass(node.kind)}`}
+          >
             {kindAbbrev(node.kind)}
           </span>
           <span

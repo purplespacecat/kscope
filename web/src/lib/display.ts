@@ -39,6 +39,47 @@ export function kindAbbrev(kind: string): string {
   return KIND_ABBREV[kind] ?? kind.slice(0, 2).toUpperCase();
 }
 
+// Distinct chip colors per kind, coherent by family: structural slate/sky,
+// infra indigo/stone, workloads blue→cyan, batch yellow, config amber/rose,
+// networking emerald/orange/red, storage teal, GitOps fuchsia, CRDs lime.
+// Full literal class strings so Tailwind's scanner picks them up.
+const KIND_CHIP: Record<string, string> = {
+  Cluster: "bg-slate-200 text-slate-700",
+  Namespace: "bg-sky-100 text-sky-700",
+  ControlPlane: "bg-indigo-100 text-indigo-700",
+  Component: "bg-indigo-50 text-indigo-600",
+  Node: "bg-stone-200 text-stone-700",
+  Deployment: "bg-blue-100 text-blue-700",
+  ReplicaSet: "bg-blue-50 text-blue-600",
+  StatefulSet: "bg-purple-100 text-purple-700",
+  DaemonSet: "bg-violet-100 text-violet-700",
+  Pod: "bg-cyan-100 text-cyan-700",
+  Job: "bg-yellow-100 text-yellow-700",
+  CronJob: "bg-yellow-100 text-yellow-800",
+  Service: "bg-emerald-100 text-emerald-700",
+  Ingress: "bg-orange-100 text-orange-700",
+  NetworkPolicy: "bg-red-100 text-red-700",
+  ConfigMap: "bg-amber-100 text-amber-700",
+  Secret: "bg-rose-100 text-rose-700",
+  ServiceAccount: "bg-green-100 text-green-700",
+  PersistentVolumeClaim: "bg-teal-100 text-teal-700",
+  PersistentVolume: "bg-teal-100 text-teal-800",
+  StorageClass: "bg-teal-50 text-teal-600",
+  StorageGroup: "bg-teal-100 text-teal-700",
+  Kustomization: "bg-fuchsia-100 text-fuchsia-700",
+  HelmRelease: "bg-fuchsia-100 text-fuchsia-800",
+  GitRepository: "bg-pink-100 text-pink-700",
+  OCIRepository: "bg-pink-100 text-pink-800",
+  HelmRepository: "bg-pink-50 text-pink-600",
+  CRDGroup: "bg-lime-100 text-lime-700",
+  CustomResourceDefinition: "bg-lime-100 text-lime-800",
+};
+
+/** Chip colors for a kind; unknown kinds are custom resources → lime. */
+export function kindChipClass(kind: string): string {
+  return KIND_CHIP[kind] ?? "bg-lime-50 text-lime-700";
+}
+
 // Order children the way you'd scan a namespace: workloads first, their
 // machinery after, then networking, config, and storage.
 const KIND_ORDER = [
