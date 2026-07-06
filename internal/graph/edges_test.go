@@ -216,8 +216,15 @@ func TestInferEdges_StorageChainAndPruning(t *testing.T) {
 	if _, ok := byID["storage.k8s.io/storageclass/unused"]; ok {
 		t.Fatal("unreferenced StorageClass must be pruned")
 	}
-	if pv := byID["core/persistentvolume/pv-1"]; pv.ParentID != clusterNodeID {
-		t.Fatalf("PV parent = %q, want cluster", pv.ParentID)
+	if pv := byID["core/persistentvolume/pv-1"]; pv.ParentID != storageGroupID {
+		t.Fatalf("PV parent = %q, want storage group", pv.ParentID)
+	}
+	group, ok := byID[storageGroupID]
+	if !ok || !group.Synthetic || group.ParentID != clusterNodeID {
+		t.Fatalf("storage group wrong: %+v", group)
+	}
+	if sc := byID["storage.k8s.io/storageclass/fast"]; sc.ParentID != storageGroupID {
+		t.Fatalf("SC parent = %q, want storage group", sc.ParentID)
 	}
 
 	edges := make(map[string]bool, len(snap.Edges))

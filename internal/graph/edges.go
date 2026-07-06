@@ -177,6 +177,27 @@ func (b *builder) netpolEdges(np networkingv1.NetworkPolicy) {
 	}
 }
 
+// storageGroupID is the synthetic tree node grouping cluster-scoped storage
+// (PVs, StorageClasses) under the cluster — same pattern as the control-plane
+// and crds groups. Keeps the cluster's child fan narrow and tucks the
+// many-PVs-to-one-StorageClass binds cluster out of the default view.
+const storageGroupID = "storage"
+
+func (b *builder) pushStorageGroup() {
+	if b.ids[storageGroupID] {
+		return
+	}
+	b.push(Node{
+		ID:        storageGroupID,
+		Kind:      "StorageGroup",
+		Name:      "storage",
+		ParentID:  clusterNodeID,
+		Health:    HealthHealthy,
+		Synthetic: true,
+		Kubectl:   kubectlCmd(b.kubectx, "", "get pv,storageclass"),
+	}, "", "")
+}
+
 // storageEdges walks PVC → PV → StorageClass. PVs and StorageClasses are
 // cluster-scoped, so they only become nodes here, when an in-scope PVC
 // actually reaches them — a namespaced invocation shouldn't drag in every
@@ -198,13 +219,14 @@ func (b *builder) storageEdges() {
 
 		pvID := nodeID("", "PersistentVolume", "", pv.Name)
 		if !b.ids[pvID] {
+			b.pushStorageGroup()
 			b.push(Node{
 				ID:         pvID,
 				Kind:       "PersistentVolume",
 				Name:       pv.Name,
 				APIVersion: "v1",
 				UID:        string(pv.UID),
-				ParentID:   clusterNodeID,
+				ParentID:   storageGroupID,
 				Labels:     pv.Labels,
 				Health:     pvHealth(pv),
 				Kubectl:    kubectlCmd(b.kubectx, "", "get pv "+pv.Name+" -o yaml"),
@@ -223,13 +245,14 @@ func (b *builder) storageEdges() {
 		}
 		scID := nodeID("storage.k8s.io", "StorageClass", "", sc.Name)
 		if !b.ids[scID] {
+			b.pushStorageGroup()
 			b.push(Node{
 				ID:         scID,
 				Kind:       "StorageClass",
 				Name:       sc.Name,
 				APIVersion: "storage.k8s.io/v1",
 				UID:        string(sc.UID),
-				ParentID:   clusterNodeID,
+				ParentID:   storageGroupID,
 				Labels:     sc.Labels,
 				Health:     HealthHealthy,
 				Kubectl:    kubectlCmd(b.kubectx, "", "get storageclass "+sc.Name+" -o yaml"),

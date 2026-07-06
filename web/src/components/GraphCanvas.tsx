@@ -9,7 +9,14 @@ import {
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
 import type { GraphEdge, GraphNode } from "../types/graph";
-import { EDGE_STYLE, HEALTH_HEX, health, kindAbbrev } from "../lib/display";
+import {
+  EDGE_STYLE,
+  HEALTH_HEX,
+  INFRA_KINDS,
+  health,
+  kindAbbrev,
+  kindRank,
+} from "../lib/display";
 
 interface Props {
   nodes: GraphNode[];
@@ -23,48 +30,159 @@ interface Props {
 const NODE_W = 200;
 const NODE_H = 56;
 
-// Dagre gives us a top-to-bottom layered layout. We rerun it whenever the
-// focus subgraph changes — cheap at focused sizes.
+// Leaf children beyond this count wrap into a grid instead of one endless
+// dagre rank — the fix for "the view is too wide".
+const WRAP_AT = 6;
+const GRID_GAP_X = 16;
+const GRID_GAP_Y = 24;
+const GRID_PAD = 16;
+
+interface Layout {
+  flowNodes: FlowNode[];
+  flowEdges: FlowEdge[];
+}
+
+// Layered "iceberg" layout:
+//   - infra (control-plane, machines) ranks ABOVE the cluster node — dagre
+//     ranks by edge direction, so infra containment edges are flipped for
+//     layout (and rendered child→parent so the line hangs naturally);
+//   - content (namespaces, crds, storage, ...) ranks below;
+//   - a parent's leaf children beyond WRAP_AT are laid out as a wrapped grid;
+//     an invisible placeholder node reserves the grid's rectangle in dagre so
+//     siblings don't collide.
 function layout(
   nodes: GraphNode[],
   edges: GraphEdge[],
   hiddenCounts: Map<string, number> | undefined,
   selectedId: string | null,
-): { flowNodes: FlowNode[]; flowEdges: FlowEdge[] } {
+): Layout {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "TB", nodesep: 30, ranksep: 50 });
   g.setDefaultEdgeLabel(() => ({}));
 
-  for (const n of nodes) g.setNode(n.id, { width: NODE_W, height: NODE_H });
+  const contains = edges.filter((e) => e.kind === "contains");
+  const overlay = edges.filter((e) => e.kind !== "contains");
 
-  // Only containment edges drive the layout — hierarchy is position,
-  // relationships are an overlay that shouldn't warp the ranks. Exception:
-  // nodes pulled in purely via a relationship (a pod's ConfigMaps) have no
-  // containment edge in view, so their relationship edge anchors them.
+  // Semantic containment (source is always the parent, as App builds them).
+  const childIds = new Map<string, string[]>();
+  const hasChildren = new Set<string>();
+  for (const e of contains) {
+    hasChildren.add(e.source);
+    const list = childIds.get(e.source);
+    if (list) list.push(e.target);
+    else childIds.set(e.source, [e.target]);
+  }
+
+  // Plan wrapped grids.
+  const gridLeaves = new Map<string, string[]>(); // placeholder id → ordered leaf ids
+  const inGrid = new Set<string>();
+  for (const [parent, kids] of childIds) {
+    const leaves = kids.filter((k) => {
+      const n = byId.get(k);
+      return n && !hasChildren.has(k) && !INFRA_KINDS.has(n.kind);
+    });
+    if (leaves.length <= WRAP_AT) continue;
+    leaves.sort((a, b) => {
+      const na = byId.get(a)!;
+      const nb = byId.get(b)!;
+      return kindRank(na.kind) - kindRank(nb.kind) || na.name.localeCompare(nb.name);
+    });
+    const rows = Math.ceil(leaves.length / WRAP_AT);
+    const phId = `__grid__${parent}`;
+    g.setNode(phId, {
+      width: WRAP_AT * NODE_W + (WRAP_AT - 1) * GRID_GAP_X + 2 * GRID_PAD,
+      height: rows * NODE_H + (rows - 1) * GRID_GAP_Y + 2 * GRID_PAD,
+    });
+    g.setEdge(parent, phId);
+    gridLeaves.set(phId, leaves);
+    for (const l of leaves) inGrid.add(l);
+  }
+
+  for (const n of nodes) {
+    if (!inGrid.has(n.id)) g.setNode(n.id, { width: NODE_W, height: NODE_H });
+  }
+
+  // Containment drives the layout; infra edges are flipped so those subtrees
+  // grow upward from the cluster.
+  for (const e of contains) {
+    if (inGrid.has(e.target)) continue; // grid members are placed manually
+    const child = byId.get(e.target);
+    if (child && INFRA_KINDS.has(child.kind)) g.setEdge(e.target, e.source);
+    else g.setEdge(e.source, e.target);
+  }
+
+  // Relationship edges don't warp ranks — except to anchor nodes pulled in
+  // purely via a relationship (they have no containment edge in view).
   const anchored = new Set<string>();
-  for (const e of edges) {
-    if (e.kind === "contains") {
-      anchored.add(e.source);
-      anchored.add(e.target);
-    }
+  for (const e of contains) {
+    anchored.add(e.source);
+    anchored.add(e.target);
   }
-  for (const e of edges) {
-    if (e.kind === "contains") {
-      g.setEdge(e.source, e.target);
-    } else if (!anchored.has(e.source) || !anchored.has(e.target)) {
+  for (const e of overlay) {
+    if (inGrid.has(e.source) || inGrid.has(e.target)) continue;
+    if (!anchored.has(e.source) || !anchored.has(e.target)) {
       g.setEdge(e.source, e.target);
     }
   }
+
   dagre.layout(g);
 
-  const flowNodes: FlowNode[] = nodes.map((n) => {
-    const { x, y } = g.node(n.id);
+  // Positions: dagre for regular nodes, computed grid slots for wrapped ones
+  // (each partial row centered within the placeholder rectangle).
+  const pos = new Map<string, { x: number; y: number }>();
+  for (const n of nodes) {
+    if (inGrid.has(n.id)) continue;
+    const p = g.node(n.id);
+    if (p) pos.set(n.id, { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 });
+  }
+  // Grid members live INSIDE a rendered group container (one containment
+  // edge into the box instead of one per leaf); positions are relative.
+  const gridParentOf = new Map<string, string>();
+  const groupNodes: FlowNode[] = [];
+  for (const [phId, leaves] of gridLeaves) {
+    const ph = g.node(phId);
+    if (!ph) continue;
+    groupNodes.push({
+      id: phId,
+      position: { x: ph.x - ph.width / 2, y: ph.y - ph.height / 2 },
+      data: { label: null },
+      selectable: false,
+      style: {
+        width: ph.width,
+        height: ph.height,
+        background: "rgba(148,163,184,0.07)",
+        border: "1px dashed #e2e8f0",
+        borderRadius: 12,
+      },
+    });
+    leaves.forEach((id, i) => {
+      const row = Math.floor(i / WRAP_AT);
+      const col = i % WRAP_AT;
+      const inRow = Math.min(WRAP_AT, leaves.length - row * WRAP_AT);
+      const rowLeft =
+        GRID_PAD +
+        (ph.width - 2 * GRID_PAD - (inRow * NODE_W + (inRow - 1) * GRID_GAP_X)) / 2;
+      gridParentOf.set(id, phId);
+      pos.set(id, {
+        x: rowLeft + col * (NODE_W + GRID_GAP_X),
+        y: GRID_PAD + row * (NODE_H + GRID_GAP_Y),
+      });
+    });
+  }
+
+  const flowNodes: FlowNode[] = [...groupNodes];
+  for (const n of nodes) {
+    const p = pos.get(n.id);
+    if (!p) continue;
+    const gridParent = gridParentOf.get(n.id);
     const hex = HEALTH_HEX[health(n)];
     const isSelected = n.id === selectedId;
     const hiddenKids = hiddenCounts?.get(n.id) ?? 0;
-    return {
+    flowNodes.push({
       id: n.id,
-      position: { x: x - NODE_W / 2, y: y - NODE_H / 2 },
+      position: p,
+      ...(gridParent ? { parentId: gridParent, extent: "parent" as const } : {}),
       data: {
         label: (
           <div className="flex w-full items-center gap-2 text-left">
@@ -112,17 +230,41 @@ function layout(
         background: "#fff",
         fontSize: 12,
       },
-    };
-  });
+    });
+  }
 
-  const flowEdges: FlowEdge[] = edges.map((e) => {
-    // Containment is implied by the layout; labeling every edge "contains"
-    // would be noise. Relationship kinds are labeled, colored and dashed.
+  const flowEdges: FlowEdge[] = [];
+  for (const [phId] of gridLeaves) {
+    // One containment edge into the box replaces one edge per grid member.
+    const parent = phId.slice("__grid__".length);
+    flowEdges.push({
+      id: `${parent}->${phId}`,
+      source: parent,
+      target: phId,
+      style: { stroke: "#cbd5e1" },
+    });
+  }
+  for (const e of edges) {
     const rel = EDGE_STYLE[e.kind];
-    return {
+    if (e.kind === "contains" && inGrid.has(e.target)) continue; // → group edge
+    if (
+      rel &&
+      (inGrid.has(e.source) || inGrid.has(e.target)) &&
+      e.source !== selectedId &&
+      e.target !== selectedId
+    ) {
+      // Wiring between packed grid leaves reads as spaghetti; it is one
+      // click away (select the leaf) rather than drawn en masse.
+      continue;
+    }
+    const child = byId.get(e.target);
+    // Infra containment renders child→parent so the line hangs from the
+    // upper (infra) node down into the cluster instead of looping around.
+    const flip = e.kind === "contains" && child && INFRA_KINDS.has(child.kind);
+    flowEdges.push({
       id: e.id,
-      source: e.source,
-      target: e.target,
+      source: flip ? e.target : e.source,
+      target: flip ? e.source : e.target,
       label: e.kind === "contains" ? undefined : e.kind,
       labelStyle: { fontSize: 10, fill: rel?.stroke ?? "#64748b" },
       // Orthogonal routing for relationship edges — bezier curves between
@@ -131,8 +273,8 @@ function layout(
       style: rel
         ? { stroke: rel.stroke, strokeDasharray: "6 3" }
         : { stroke: "#cbd5e1" },
-    };
-  });
+    });
+  }
 
   return { flowNodes, flowEdges };
 }
@@ -162,7 +304,10 @@ export function GraphCanvas({
         // fitView from actually fitting them.
         minZoom={0.04}
         maxZoom={1.25}
-        onNodeClick={(_, n) => onSelect((n.data as { raw: GraphNode }).raw)}
+        onNodeClick={(_, n) => {
+          const raw = (n.data as { raw?: GraphNode }).raw;
+          if (raw) onSelect(raw);
+        }}
         onPaneClick={() => onSelect(null)}
       >
         <Background />
