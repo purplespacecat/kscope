@@ -8,12 +8,13 @@ import (
 	"strings"
 
 	"github.com/purplespacecat/kscope/internal/graph"
+	"github.com/purplespacecat/kscope/internal/paths"
 	"github.com/purplespacecat/kscope/internal/server"
 )
 
 func main() {
 	port := flag.String("port", "8080", "HTTP listen port")
-	dataDir := flag.String("data-dir", "./data", "directory for persisted snapshot")
+	dataDir := flag.String("data-dir", paths.DataDir(), "directory for persisted snapshot")
 	discoverNS := flag.String("discover-namespaces", "", "if set, run one discovery pass for these comma-separated namespaces and exit (no HTTP server)")
 	includeInfra := flag.Bool("include-infra", true, "one-shot mode: include cluster nodes + control-plane")
 	includeCRDs := flag.Bool("include-crds", true, "one-shot mode: include custom resources (CRDs + instances)")
