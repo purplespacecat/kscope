@@ -1,0 +1,16 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "kscope",
+  "outputfilename": "kscope-desktop",
+  "frontend:dir": "../../web",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "build:tags": "webkit2_41",
+  "info": {
+    "productName": "kscope",
+    "productVersion": "1.0.0",
+    "comments": "Interactive map of a Kubernetes cluster"
+  }
+}

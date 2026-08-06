@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/purplespacecat/kscope/internal/graph"
@@ -64,6 +65,23 @@ func spaHandler() (http.Handler, error) {
 func (s *Server) Run(port string) error {
 	addr := fmt.Sprintf(":%s", port)
 	return http.ListenAndServe(addr, s.mux)
+}
+
+// Mux exposes the routing table so a host that isn't a TCP listener can serve
+// the same API. The desktop shell hands this to Wails' asset server, which
+// lets the frontend keep using plain same-origin fetch with no port open.
+func (s *Server) Mux() http.Handler { return s.mux }
+
+// IsAPIPath reports whether a request belongs to the JSON API rather than the
+// SPA.
+//
+// The desktop shell needs this because Wails' dev-mode asset handler forwards
+// every unmatched GET to the Vite dev server, and answers non-GET requests
+// with 405 — so /api/* has to be claimed before Wails sees it. Keeping the
+// predicate here means the route prefixes are declared in one place, next to
+// the handlers they describe.
+func IsAPIPath(p string) bool {
+	return p == "/healthz" || strings.HasPrefix(p, "/api/")
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

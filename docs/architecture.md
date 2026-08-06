@@ -40,6 +40,30 @@ Why server-side and not browser state: survives refresh, consistent across tabs,
 - **Dev:** Vite dev server on `:5173` proxies `/api` and `/healthz` to the Go API on `:8080`.
 - **Prod:** single Go binary; `web/dist/` is embedded via `web/embed.go` and served at `/`. The stdlib mux handles route precedence so `/api/*` and `/healthz` win over the SPA fallback.
 
+### Desktop shell (Wails v2)
+
+`cmd/kscope-desktop` wraps the same core in an OS webview. It is a second thin
+entrypoint, not a fork: all logic stays in `internal/`.
+
+The load-bearing detail is that **the desktop app opens no TCP port**. Wails'
+`assetserver.Options` accepts a `Middleware`, which wraps the outermost handler
+in both dev and production builds. `/api/*` and `/healthz` are claimed there and
+routed straight into the existing `*http.ServeMux` (`server.Mux()`), so the
+frontend keeps using plain same-origin `fetch` with no client changes and no
+CORS story.
+
+`Middleware` rather than `Handler` because the alternatives break in dev mode:
+Wails' dev asset handler forwards every unmatched GET to Vite (so `/api/...`
+would loop out to the dev server) and answers non-GET requests with a blanket
+405 (so `POST /api/graph/refresh` would never arrive). Middleware runs ahead of
+both. A corollary: the Vite proxy in `web/vite.config.ts` is only used by the
+browser dev workflow — `wails dev` never touches it.
+
+Wails' `build:tags` is set to `webkit2_41`; Fedora 44 ships only
+`webkit2gtk-4.1`, and Wails v2 still defaults to the 4.0 pkg-config name.
+`wails build` runs `go build` in the directory containing `wails.json`, so that
+file lives in `cmd/kscope-desktop/` rather than at the repo root.
+
 ### K8s
 - Remote k3s cluster via kubeconfig.
 - No in-cluster deployment yet; dev mode connects from localhost.
@@ -48,10 +72,12 @@ Why server-side and not browser state: survives refresh, consistent across tabs,
 
 | Path | Purpose |
 |---|---|
-| `cmd/kscope` | binary entrypoint; flags, startup load, CLI one-shot |
+| `cmd/kscope` | HTTP server + CLI one-shot entrypoint; flags, startup load |
+| `cmd/kscope-desktop` | Wails desktop entrypoint; serves the same mux in-process, no port |
 | `internal/graph` | types, store (graph + manifests persistence), `discover.go` (listers, health, tree), `edges.go` (relationship inference), `manifest.go` (redacted YAML) |
-| `internal/server` | HTTP handlers + SPA fallback |
-| `web` | SPA + Go embed wrapper (`Dist embed.FS`) |
+| `internal/paths` | per-user data directory resolution (XDG on Linux) |
+| `internal/server` | HTTP handlers + SPA fallback; `Mux()`/`IsAPIPath()` let a non-listening host reuse the routes |
+| `web` | SPA + Go embed wrapper (`Dist embed.FS`), shared by both binaries |
 
 ## Data shape
 
@@ -83,6 +109,9 @@ type Snapshot struct {
 | Snapshot keying | single global latest | Matches the "semi-dynamic" promise; avoids a views CRUD |
 | Snapshot storage | JSON file, atomic rename | No DB; swappable for SQLite if/when history is needed |
 | SPA serving | embedded via `go:embed` | Single-binary deploy; no CORS story |
+| Desktop shell | Wails v2 over Electron/Tauri | Keeps the Go core as the app core; OS webview, ~10–15 MB binary. Tauri would mean rewriting the backend in Rust; Electron would mean a Go sidecar plus a bundled Chromium. v2 over v3-beta for maturity. |
+| Desktop API transport | existing mux via `assetserver.Middleware` | Reuses the tested HTTP surface and its handler tests; zero frontend changes; no port open. Wails bindings are reserved for what HTTP genuinely cannot do (native dialogs, window control). |
+| Data directory | XDG per-user path, `--data-dir` override | A menu-launched app has an arbitrary CWD, so `./data` would scatter snapshots |
 
 ## Open questions / future work
 - Extra scope dimensions: resource kinds, label selectors, cluster-wide.

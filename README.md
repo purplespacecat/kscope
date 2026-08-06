@@ -8,7 +8,15 @@ The view is **semi-dynamic**: each invocation produces a snapshot that the serve
 
 - **Backend:** Go + stdlib `net/http`; discovery via `client-go` against the active kubeconfig context.
 - **Frontend:** React + TypeScript + `@xyflow/react` + Tailwind, built with Vite.
-- **State:** snapshot cached in memory, mirrored to `./data/latest.json`.
+- **Desktop shell:** [Wails v2](https://wails.io) — an OS webview around the same Go core, no bundled browser runtime.
+- **State:** snapshot cached in memory, mirrored to `latest.json` in the data dir.
+
+There are two binaries over one shared core in `internal/`:
+
+| Binary | What it is |
+|---|---|
+| `cmd/kscope` | the original HTTP server + one-shot CLI; opens a port, you visit a URL |
+| `cmd/kscope-desktop` | the native app; **opens no port** — the same `http.ServeMux` is served in-process through Wails' asset server |
 
 ## Endpoints
 
@@ -23,7 +31,29 @@ The view is **semi-dynamic**: each invocation produces a snapshot that the serve
 
 ## Running it
 
-### Dev (two processes)
+### Desktop app
+
+Requires the Wails CLI plus a webview toolchain. On Fedora only `webkit2gtk-4.1`
+is packaged (4.0 is gone), which is why `wails.json` sets `build:tags` to
+`webkit2_41` — without that tag the build fails looking for 4.0.
+
+```bash
+sudo dnf install -y gtk3-devel webkit2gtk4.1-devel
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+# wails runs `go build` in the directory holding wails.json, so it lives
+# next to the desktop main package rather than at the repo root.
+cd cmd/kscope-desktop
+wails dev     # hot-reloading dev window
+wails build   # → cmd/kscope-desktop/build/bin/kscope-desktop
+```
+
+The frontend talks to the backend over plain same-origin `fetch`, exactly as it
+does in the browser. An `assetserver.Middleware` claims `/api/*` and `/healthz`
+before Wails' own asset handling — necessary because in dev mode Wails forwards
+unmatched GETs to Vite and answers non-GET requests with 405.
+
+### Dev (two processes, browser)
 
 ```bash
 # 1. Start the Go API on :8080
@@ -49,7 +79,7 @@ Open http://localhost:8080.
 
 ### CLI-only invocation (no HTTP server)
 
-Writes a snapshot to `./data/latest.json` and exits — useful for cron or ad-hoc runs:
+Writes a snapshot to the data dir and exits — useful for cron or ad-hoc runs:
 
 ```bash
 go run ./cmd/kscope --discover-namespaces=default,monitoring
@@ -62,10 +92,18 @@ Subsequent `kscope` server starts will pick up that snapshot on boot.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--port` | `8080` | HTTP listen port |
-| `--data-dir` | `./data` | directory holding `latest.json` + `manifests.json` |
+| `--data-dir` | `$XDG_DATA_HOME/kscope` | directory holding `latest.json` + `manifests.json` |
 | `--discover-namespaces` | `""` | one-shot mode: run discovery for these namespaces and exit |
 | `--include-infra` | `true` | one-shot mode: include cluster nodes + control-plane |
 | `--redact-extra` | `""` | extra dotted paths to redact in every manifest, e.g. `spec.password` |
+
+`--data-dir` defaults to a per-user location (`$XDG_DATA_HOME/kscope`, i.e.
+`~/.local/share/kscope`, and `~/Library/Application Support/kscope` on macOS)
+rather than `./data`. A desktop app launched from a menu entry inherits an
+arbitrary working directory, so a relative default would scatter snapshots
+wherever it happened to start. `scripts/dev.sh` still passes `--data-dir ./data`,
+so the repo-local workflow is unchanged. `cmd/kscope-desktop` accepts
+`--data-dir` and `--redact-extra` only; the rest are server/CLI flags.
 
 ## Status
 
