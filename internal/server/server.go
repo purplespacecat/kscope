@@ -22,7 +22,8 @@ type Server struct {
 	// Indirection points for the cluster-touching calls, so handler tests can
 	// swap in deterministic fakes instead of needing a live kubeconfig.
 	discover       func(context.Context, graph.Scope) (graph.Snapshot, error)
-	listNamespaces func(context.Context) ([]string, error)
+	listNamespaces func(context.Context, string) ([]string, error)
+	listContexts   func() ([]graph.KubeContext, error)
 }
 
 func New(store *graph.Store) *Server {
@@ -31,8 +32,10 @@ func New(store *graph.Store) *Server {
 		store:          store,
 		discover:       graph.Discover,
 		listNamespaces: graph.ListNamespaces,
+		listContexts:   graph.ListContexts,
 	}
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /api/contexts", s.handleContexts)
 	s.mux.HandleFunc("GET /api/namespaces", s.handleNamespaces)
 	s.mux.HandleFunc("GET /api/graph/latest", s.handleLatest)
 	s.mux.HandleFunc("POST /api/graph/refresh", s.handleRefresh)
@@ -88,8 +91,22 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleContexts lists the kubeconfig contexts for the picker. This reads a
+// local file only — no cluster is contacted, so an unreachable context still
+// shows up as a choice.
+func (s *Server) handleContexts(w http.ResponseWriter, _ *http.Request) {
+	ctxs, err := s.listContexts()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"contexts": ctxs})
+}
+
+// handleNamespaces lists namespaces for the scope picker. The optional
+// ?context= selects which cluster to ask; omitting it means current-context.
 func (s *Server) handleNamespaces(w http.ResponseWriter, r *http.Request) {
-	ns, err := s.listNamespaces(r.Context())
+	ns, err := s.listNamespaces(r.Context(), r.URL.Query().Get("context"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

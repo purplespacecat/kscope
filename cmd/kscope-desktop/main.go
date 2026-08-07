@@ -48,11 +48,12 @@ func main() {
 	}
 
 	api := server.New(store).Mux()
+	app := newApp(store, *dataDir)
 
 	err = wails.Run(&options.App{
 		Title:  "kscope",
-		Width:  1400,
-		Height: 900,
+		Width:  defaultWidth,
+		Height: defaultHeight,
 		AssetServer: &assetserver.Options{
 			Assets: dist,
 			// Middleware wraps the outermost handler in both dev and
@@ -61,9 +62,16 @@ func main() {
 			// before non-GET requests get a blanket 405).
 			Middleware: apiMiddleware(api),
 		},
-		OnStartup: func(_ context.Context) {
+		Menu: app.appMenu(),
+		// Bound methods are reachable from JS as window.go.main.App.*.
+		// Only natively-backed operations belong here; data still flows
+		// over HTTP.
+		Bind: []any{app},
+		OnStartup: func(ctx context.Context) {
+			app.startup(ctx)
 			log.Printf("kscope desktop started (data-dir=%s)", *dataDir)
 		},
+		OnBeforeClose: app.beforeClose,
 	})
 	if err != nil {
 		log.Fatal(err)

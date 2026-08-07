@@ -23,8 +23,14 @@ func newTestServer(t *testing.T) (*Server, string) {
 	store := graph.NewStore(filepath.Join(dir, "latest.json"))
 	srv := New(store)
 	srv.discover = fakeDiscover
-	srv.listNamespaces = func(context.Context) ([]string, error) {
+	srv.listNamespaces = func(context.Context, string) ([]string, error) {
 		return []string{"default", "kube-system"}, nil
+	}
+	srv.listContexts = func() ([]graph.KubeContext, error) {
+		return []graph.KubeContext{
+			{Name: "k3s", Cluster: "k3s", Current: true},
+			{Name: "staging", Cluster: "staging"},
+		}, nil
 	}
 	return srv, dir
 }
@@ -150,6 +156,90 @@ func TestManifest_ServedAndMissing(t *testing.T) {
 	srv.mux.ServeHTTP(rr2, httptest.NewRequest(http.MethodGet, "/api/node/manifest/core/pod/nope/nope", nil))
 	if rr2.Code != http.StatusNotFound {
 		t.Fatalf("unknown node: want 404, got %d", rr2.Code)
+	}
+}
+
+func TestContexts_Lists(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/contexts", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	var body struct {
+		Contexts []graph.KubeContext `json:"contexts"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Contexts) != 2 {
+		t.Fatalf("want 2 contexts, got %d", len(body.Contexts))
+	}
+	if !body.Contexts[0].Current {
+		t.Errorf("expected the first context to be marked current")
+	}
+}
+
+// The picker sends ?context= so it can list namespaces for a cluster the user
+// is considering but has not yet discovered against.
+func TestNamespaces_PassesContextThrough(t *testing.T) {
+	srv, _ := newTestServer(t)
+	var got string
+	srv.listNamespaces = func(_ context.Context, kubeContext string) ([]string, error) {
+		got = kubeContext
+		return []string{"default"}, nil
+	}
+
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/namespaces?context=staging", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+	if got != "staging" {
+		t.Fatalf("listNamespaces got context %q, want %q", got, "staging")
+	}
+}
+
+// An absent ?context= must stay "", which newKubeClient reads as
+// "use the kubeconfig's current-context" — the pre-picker behaviour.
+func TestNamespaces_NoContextMeansCurrent(t *testing.T) {
+	srv, _ := newTestServer(t)
+	got := "unset"
+	srv.listNamespaces = func(_ context.Context, kubeContext string) ([]string, error) {
+		got = kubeContext
+		return []string{"default"}, nil
+	}
+
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/namespaces", nil))
+
+	if got != "" {
+		t.Fatalf("listNamespaces got context %q, want empty", got)
+	}
+}
+
+// Scope.Context has to survive the JSON round-trip into discovery, otherwise
+// the picker would silently discover the wrong cluster.
+func TestRefresh_ForwardsContextInScope(t *testing.T) {
+	srv, _ := newTestServer(t)
+	var got graph.Scope
+	srv.discover = func(ctx context.Context, scope graph.Scope) (graph.Snapshot, error) {
+		got = scope
+		return fakeDiscover(ctx, scope)
+	}
+
+	body := bytes.NewBufferString(`{"context":"staging","namespaces":["default"]}`)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/graph/refresh", body))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rr.Code, rr.Body)
+	}
+	if got.Context != "staging" {
+		t.Fatalf("discover got context %q, want %q", got.Context, "staging")
 	}
 }
 

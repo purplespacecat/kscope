@@ -10,6 +10,7 @@ import {
   type Node as FlowNode,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
+import { DESKTOP_EVENTS, onDesktopEvent } from "../lib/desktop";
 import type { GraphEdge, GraphNode } from "../types/graph";
 import {
   EDGE_STYLE,
@@ -489,6 +490,17 @@ function layout(
 // (Needs the ReactFlow context, hence a child component inside <ReactFlow>.)
 function RecenterButton() {
   const { fitView } = useReactFlow();
+
+  // The desktop View menu drives the same action. Subscribing here rather than
+  // in App keeps it next to the only code that holds the ReactFlow context.
+  useEffect(
+    () =>
+      onDesktopEvent(DESKTOP_EVENTS.recenter, () =>
+        fitView({ padding: 0.1, duration: 300 }),
+      ),
+    [fitView],
+  );
+
   return (
     <Panel position="top-right">
       <button

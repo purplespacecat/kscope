@@ -1,4 +1,4 @@
-import type { Scope, Snapshot } from "../types/graph";
+import type { KubeContext, Scope, Snapshot } from "../types/graph";
 
 // `null` means "server has no snapshot yet" (HTTP 204), distinct from an
 // error. Callers render the empty state in that case.
@@ -9,8 +9,18 @@ export async function getLatest(): Promise<Snapshot | null> {
   return (await res.json()) as Snapshot;
 }
 
-export async function getNamespaces(): Promise<string[]> {
-  const res = await fetch("/api/namespaces");
+export async function getContexts(): Promise<KubeContext[]> {
+  const res = await fetch("/api/contexts");
+  if (!res.ok) throw new Error(`GET /api/contexts: ${res.status}`);
+  const body = (await res.json()) as { contexts: KubeContext[] };
+  return body.contexts;
+}
+
+// An empty kubeContext means "the kubeconfig's current-context", so the param
+// is only sent when the user has actually chosen something else.
+export async function getNamespaces(kubeContext?: string): Promise<string[]> {
+  const qs = kubeContext ? `?context=${encodeURIComponent(kubeContext)}` : "";
+  const res = await fetch(`/api/namespaces${qs}`);
   if (!res.ok) throw new Error(`GET /api/namespaces: ${res.status}`);
   const body = (await res.json()) as { namespaces: string[] };
   return body.namespaces;

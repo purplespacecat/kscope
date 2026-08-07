@@ -33,16 +33,17 @@ const clusterNodeID = "cluster"
 // selects, ...) are inferred into Edges. Every node's redacted manifest is
 // captured into Snapshot.Manifests.
 func Discover(ctx context.Context, scope Scope) (Snapshot, error) {
-	kc, err := newKubeClient()
+	kc, err := newKubeClient(scope.Context)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	return discover(ctx, kc.clientset, kc.dynamic, kc.meta, scope)
 }
 
-// ListNamespaces returns the namespace choices shown in the scope picker.
-func ListNamespaces(ctx context.Context) ([]string, error) {
-	kc, err := newKubeClient()
+// ListNamespaces returns the namespace choices shown in the scope picker, for
+// the given kubeconfig context (empty means current-context).
+func ListNamespaces(ctx context.Context, kubeContext string) ([]string, error) {
+	kc, err := newKubeClient(kubeContext)
 	if err != nil {
 		return nil, err
 	}

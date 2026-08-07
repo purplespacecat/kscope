@@ -23,9 +23,10 @@ There are two binaries over one shared core in `internal/`:
 | Method + Path | What it does |
 |---|---|
 | `GET /healthz` | liveness check |
-| `GET /api/namespaces` | namespace list for the scope picker |
+| `GET /api/contexts` | kubeconfig contexts for the cluster picker (reads the local file; contacts no cluster) |
+| `GET /api/namespaces` | namespace list for the scope picker; optional `?context=` selects the cluster |
 | `GET /api/graph/latest` | last snapshot, or `204 No Content` if none yet |
-| `POST /api/graph/refresh` | body `{ "namespaces": [...] }` (empty list = all namespaces) → runs discovery, updates the snapshot |
+| `POST /api/graph/refresh` | body `{ "context": "...", "namespaces": [...] }` (empty list = all namespaces, absent context = current-context) → runs discovery, updates the snapshot |
 | `GET /api/node/manifest/{id...}` | one node's redacted YAML manifest (Secret values are never stored) |
 | `GET /`, `GET /assets/*` | the embedded SPA (prod) |
 
@@ -52,6 +53,23 @@ The frontend talks to the backend over plain same-origin `fetch`, exactly as it
 does in the browser. An `assetserver.Middleware` claims `/api/*` and `/healthz`
 before Wails' own asset handling — necessary because in dev mode Wails forwards
 unmatched GETs to Vite and answers non-GET requests with 405.
+
+What the desktop build adds beyond the browser one:
+
+- **Application menu** — File → Run discovery (`Ctrl-R`), View → Re-center graph
+  (`Ctrl-0`), Help → About. The view commands emit events the frontend acts on,
+  since React owns that state.
+- **Native save dialog** for manifests. In the browser the same button falls
+  back to an ordinary download.
+- **Window size/maximised state** persisted to `window.json` in the data dir.
+  Position is deliberately not persisted: under Wayland a client cannot query
+  or set its own absolute window position.
+
+The frontend reaches these through the `window.runtime` / `window.go` globals
+Wails injects (`web/src/lib/desktop.ts`), never by importing the CLI-generated
+`web/wailsjs/` directory — that only exists after a Wails build, so importing
+it would break `npm run build` and the browser dev workflow. Every function in
+that adapter degrades to a browser-native equivalent.
 
 ### Dev (two processes, browser)
 
