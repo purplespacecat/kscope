@@ -2,11 +2,22 @@
 // if this drifts often we'll generate from Go (e.g. with tygo).
 
 export interface Scope {
+  /** Kubeconfig context to discover against; absent = current-context. */
+  context?: string;
   namespaces: string[];
   /** Adds cluster Nodes + logical control-plane to the discovery. */
   includeInfra?: boolean;
   /** Adds generic custom resources (CRDs + their instances). */
   includeCRDs?: boolean;
+}
+
+/** One selectable entry from the local kubeconfig. */
+export interface KubeContext {
+  name: string;
+  cluster: string;
+  namespace?: string;
+  /** True for the kubeconfig's own current-context. */
+  current: boolean;
 }
 
 export type Health = "healthy" | "warning" | "error" | "unknown";

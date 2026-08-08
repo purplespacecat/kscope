@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "../api/client";
-import type { Scope, Snapshot } from "../types/graph";
+import type { KubeContext, Scope, Snapshot } from "../types/graph";
 
 const LATEST_KEY = ["graph", "latest"] as const;
 
@@ -15,10 +15,22 @@ export function useLatest() {
   });
 }
 
-export function useNamespaces() {
+// Read from the local kubeconfig only — no cluster round-trip, so this stays
+// fresh for the session.
+export function useContexts() {
+  return useQuery<KubeContext[]>({
+    queryKey: ["contexts"],
+    queryFn: api.getContexts,
+    staleTime: Infinity,
+  });
+}
+
+// Keyed by context so switching clusters refetches instead of showing the
+// previous cluster's namespaces.
+export function useNamespaces(kubeContext?: string) {
   return useQuery<string[]>({
-    queryKey: ["namespaces"],
-    queryFn: api.getNamespaces,
+    queryKey: ["namespaces", kubeContext ?? ""],
+    queryFn: () => api.getNamespaces(kubeContext),
     staleTime: 60_000,
   });
 }

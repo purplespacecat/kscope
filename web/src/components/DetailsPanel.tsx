@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GraphEdge, GraphNode } from "../types/graph";
 import { useManifest } from "../hooks/useGraph";
+import { saveManifest } from "../lib/desktop";
 import {
   HEALTH_DOT,
   HEALTH_LABEL,
@@ -257,7 +258,12 @@ export function DetailsPanel({
           <section>
             <div className="mb-1.5 flex items-center justify-between">
               <SectionTitle noMargin>Manifest</SectionTitle>
-              {manifest.data && <CopyButton text={manifest.data} />}
+              {manifest.data && (
+                <div className="flex items-center gap-2">
+                  <SaveButton name={node.name} yaml={manifest.data} />
+                  <CopyButton text={manifest.data} />
+                </div>
+              )}
             </div>
             {manifest.isLoading && (
               <p className="text-xs text-slate-400">Loading…</p>
@@ -338,6 +344,33 @@ function SectionTitle({
     >
       {children}
     </div>
+  );
+}
+
+// Writes the manifest to disk: a native save dialog in the desktop app, a
+// browser download otherwise (see lib/desktop.ts).
+function SaveButton({ name, yaml }: { name: string; yaml: string }) {
+  const [status, setStatus] = useState<"idle" | "saved" | "error">("idle");
+  useEffect(() => {
+    if (status === "idle") return;
+    const t = setTimeout(() => setStatus("idle"), 1500);
+    return () => clearTimeout(t);
+  }, [status]);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        saveManifest(name, yaml).then(
+          // A null path is the browser fallback and "" is a cancelled dialog;
+          // neither deserves a confirmation.
+          (path) => setStatus(path ? "saved" : "idle"),
+          () => setStatus("error"),
+        );
+      }}
+      className="shrink-0 rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
+    >
+      {status === "saved" ? "Saved" : status === "error" ? "Failed" : "Save"}
+    </button>
   );
 }
 

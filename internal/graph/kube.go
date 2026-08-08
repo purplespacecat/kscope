@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"k8s.io/client-go/dynamic"
@@ -19,16 +20,28 @@ type kubeClient struct {
 }
 
 // newKubeClient loads the active kubeconfig — same resolution rules as
-// kubectl: $KUBECONFIG, then ~/.kube/config, honoring the current context.
+// kubectl: $KUBECONFIG, then ~/.kube/config. An empty kubeContext honours the
+// file's current-context; naming one overrides it, the equivalent of
+// `kubectl --context`.
 // Building one per discovery pass is fine: it only parses a local file; no
 // network happens until the first API call.
-func newKubeClient() (*kubeClient, error) {
+func newKubeClient(kubeContext string) (*kubeClient, error) {
 	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		clientcmd.NewDefaultClientConfigLoadingRules(), &clientcmd.ConfigOverrides{})
+		clientcmd.NewDefaultClientConfigLoadingRules(),
+		&clientcmd.ConfigOverrides{CurrentContext: kubeContext})
 
 	raw, err := loader.RawConfig()
 	if err != nil {
 		return nil, fmt.Errorf("load kubeconfig: %w", err)
+	}
+	// raw.CurrentContext reflects the file, not the override, so resolve which
+	// context actually got used before it reaches ClusterMeta.
+	active := kubeContext
+	if active == "" {
+		active = raw.CurrentContext
+	}
+	if _, ok := raw.Contexts[active]; !ok {
+		return nil, fmt.Errorf("kubeconfig has no context %q", active)
 	}
 	cfg, err := loader.ClientConfig()
 	if err != nil {
@@ -54,6 +67,39 @@ func newKubeClient() (*kubeClient, error) {
 	return &kubeClient{
 		clientset: cs,
 		dynamic:   dyn,
-		meta:      ClusterMeta{Context: raw.CurrentContext, Server: cfg.Host},
+		meta:      ClusterMeta{Context: active, Server: cfg.Host},
 	}, nil
+}
+
+// KubeContext is one selectable entry from the kubeconfig.
+type KubeContext struct {
+	Name      string `json:"name"`
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace,omitempty"`
+	Current   bool   `json:"current"`
+}
+
+// ListContexts reads the kubeconfig and reports the contexts available to the
+// picker. It never contacts a cluster — a context that fails to connect is
+// still worth offering, because that is exactly what the user is trying to
+// find out by selecting it.
+func ListContexts() ([]KubeContext, error) {
+	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		clientcmd.NewDefaultClientConfigLoadingRules(), &clientcmd.ConfigOverrides{})
+	raw, err := loader.RawConfig()
+	if err != nil {
+		return nil, fmt.Errorf("load kubeconfig: %w", err)
+	}
+	out := make([]KubeContext, 0, len(raw.Contexts))
+	for name, c := range raw.Contexts {
+		out = append(out, KubeContext{
+			Name:      name,
+			Cluster:   c.Cluster,
+			Namespace: c.Namespace,
+			Current:   name == raw.CurrentContext,
+		})
+	}
+	// Map iteration is random; the picker needs a stable order.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }

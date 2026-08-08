@@ -6,6 +6,10 @@ import "time"
 // v1 only filters by namespace; adding fields here stays backwards-compatible
 // because the JSON decoder tolerates missing keys.
 type Scope struct {
+	// Context names the kubeconfig context to discover against. Empty means
+	// "whatever the kubeconfig's current-context is", which is the behaviour
+	// this had before the field existed.
+	Context string `json:"context,omitempty"`
 	// Namespaces to include. Empty means "every namespace in the cluster".
 	Namespaces []string `json:"namespaces"`
 	// IncludeInfra adds the infrastructure layer: cluster Nodes, the logical
