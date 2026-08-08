@@ -90,6 +90,36 @@ Wails injects (`web/src/lib/desktop.ts`), never by importing the CLI-generated
 it would break `npm run build` and the browser dev workflow. Every function in
 that adapter degrades to a browser-native equivalent.
 
+### k9s plugin
+
+Press `Shift-G` on any resource in k9s to open it in kscope.
+
+```bash
+# kscope-desktop must be on $PATH
+install -m755 cmd/kscope-desktop/build/bin/kscope-desktop ~/.local/bin/
+
+# No plugins file yet? Copy it.
+cp contrib/k9s/plugins.yaml ~/.config/k9s/plugins.yaml
+```
+
+If you already have a `~/.config/k9s/plugins.yaml`, copy the `kscope:` entry
+under its existing `plugins:` key by hand — appending the whole file would give
+you two top-level `plugins:` keys and invalid YAML.
+
+k9s has **no in-process plugin API**: a plugin is a shell-out bound to a key,
+with resource coordinates substituted into the arguments. So the plugin runs
+the kscope binary, which hands off to the already-running window (M3) or starts
+the app focused on that resource if it isn't running.
+
+`background: true` is not optional. Without it k9s suspends its screen and
+waits for the process — which exits immediately with status 1 when handing off
+(Wails' success signal), and which k9s would report as a failure.
+
+k9s substitutes `$RESOURCE_NAME` as the plural resource name (`deployments`),
+not the Kind, which is why `--focus-kind` accepts both. In the all-namespaces
+view `$NAMESPACE` arrives literally as `all`; kscope treats that as "don't
+filter by namespace".
+
 ### Dev (two processes, browser)
 
 ```bash

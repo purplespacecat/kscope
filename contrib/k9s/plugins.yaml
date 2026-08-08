@@ -1,0 +1,37 @@
+# kscope plugin for k9s.
+#
+# Install by merging into ~/.config/k9s/plugins.yaml (k9s reads a single file,
+# so append this entry under an existing `plugins:` key rather than replacing
+# the file). Then press Shift-G on any resource to open it in kscope.
+#
+# k9s has no in-process plugin API — a plugin is a shell-out bound to a key —
+# so this launches the kscope binary. If kscope is already running, that
+# invocation hands off to the running window instead of opening a second one;
+# if it isn't, it starts the app focused on the selected resource.
+#
+# Requires kscope-desktop on $PATH.
+plugins:
+  kscope:
+    shortCut: Shift-G
+    description: Graph in kscope
+    # Available on every view. kscope resolves whatever it can and explains
+    # itself in-app when a resource isn't in the current snapshot.
+    scopes:
+      - all
+    # Essential. Without it k9s suspends its screen and waits for the process:
+    # when handing off, kscope exits immediately with status 1 (how Wails
+    # signals a successful handoff), which k9s would report as a failure; and
+    # when starting fresh, k9s would sit blanked until you quit kscope.
+    background: true
+    command: kscope-desktop
+    args:
+      # $RESOURCE_NAME is the plural resource ("deployments"), not the Kind —
+      # --focus-kind accepts either form.
+      - --focus-context
+      - $CONTEXT
+      - --focus-namespace
+      - $NAMESPACE
+      - --focus-kind
+      - $RESOURCE_NAME
+      - --focus-name
+      - $NAME

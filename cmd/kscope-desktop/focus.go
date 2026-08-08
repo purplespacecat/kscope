@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 
 	"github.com/purplespacecat/kscope/internal/graph"
@@ -29,7 +30,20 @@ func registerFocusFlags(fs *flag.FlagSet) *focusFlags {
 }
 
 func (f focusFlags) ref() graph.NodeRef {
-	return graph.NodeRef{Namespace: f.namespace, Name: f.name, Kind: f.kind}
+	return graph.NodeRef{Namespace: normalizeNamespace(f.namespace), Name: f.name, Kind: f.kind}
+}
+
+// normalizeNamespace maps the "every namespace" sentinels a caller might pass
+// onto the empty string, which ResolveNode reads as "don't filter". k9s
+// substitutes $NAMESPACE literally, so in its all-namespaces view the flag
+// arrives as "all" — matching nothing if taken at face value.
+func normalizeNamespace(ns string) string {
+	switch ns {
+	case "all", "*":
+		return ""
+	default:
+		return ns
+	}
 }
 
 // focusPayload is what the frontend receives. Exactly one of ID / Missing is
@@ -69,10 +83,18 @@ func (a *App) focus(f focusFlags) {
 		payload.Missing = true
 	}
 
+	// Log the resolved reference, not the raw flags: an all-namespaces request
+	// arrives as "all" but is deliberately searched as "any namespace", and
+	// showing the raw value here reads like a bug.
+	ref := f.ref()
+	where := ref.Name
+	if ref.Namespace != "" {
+		where = ref.Namespace + "/" + ref.Name
+	}
 	if payload.Missing {
-		log.Printf("focus %s %s/%s: not in current snapshot", f.kind, f.namespace, f.name)
+		log.Printf("focus %s %s: not in current snapshot", ref.Kind, where)
 	} else {
-		log.Printf("focus %s %s/%s -> %s", f.kind, f.namespace, f.name, payload.ID)
+		log.Printf("focus %s %s -> %s", ref.Kind, where, payload.ID)
 	}
 
 	wruntime.EventsEmit(a.ctx, eventFocus, payload)
@@ -84,16 +106,27 @@ func (a *App) focus(f focusFlags) {
 // instance is already up: Wails delivers the second process's arguments here
 // and that process exits, so this is the k9s handoff path.
 func (a *App) onSecondInstance(data options.SecondInstanceData) {
-	fs := flag.NewFlagSet("second-instance", flag.ContinueOnError)
-	fs.SetOutput(nil) // don't print usage into the running app's log
-	f := registerFocusFlags(fs)
-	// The running instance's data dir wins; ignore any second-instance value.
-	fs.String("data-dir", "", "ignored in a second instance")
-	fs.String("redact-extra", "", "ignored in a second instance")
-
-	if err := fs.Parse(data.Args); err != nil {
+	f, err := parseFocusArgs(data.Args)
+	if err != nil {
 		log.Printf("warn: ignoring unparsable second-instance args %v: %v", data.Args, err)
 		return
 	}
-	a.focus(*f)
+	a.focus(f)
+}
+
+// parseFocusArgs reads the focus flags out of a second instance's argv. The
+// startup flags are accepted and discarded: the running instance's data dir
+// and redaction settings win, but the second process legitimately passes them
+// (it doesn't know it will be handing off), so they must not be parse errors.
+func parseFocusArgs(args []string) (focusFlags, error) {
+	fs := flag.NewFlagSet("second-instance", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // don't print usage into the running app's log
+	f := registerFocusFlags(fs)
+	fs.String("data-dir", "", "ignored in a second instance")
+	fs.String("redact-extra", "", "ignored in a second instance")
+
+	if err := fs.Parse(args); err != nil {
+		return focusFlags{}, err
+	}
+	return *f, nil
 }
