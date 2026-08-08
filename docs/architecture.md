@@ -5,7 +5,7 @@ Visualize Kubernetes resources as a connected graph — namespaces, deployments,
 
 ## Invocation model
 
-kscope is **semi-dynamic**: the user picks a scope (currently just namespaces), triggers an invocation (UI button or CLI flag), and the server runs one discovery pass. The resulting snapshot is cached in memory and mirrored atomically to `./data/latest.json`. It sticks around — across page refreshes and server restarts — until the next invocation replaces it.
+kscope is **semi-dynamic**: the user picks a scope (a kubeconfig context plus namespaces), triggers an invocation (UI button, `Ctrl-R`, or CLI flag), and the server runs one discovery pass. The resulting snapshot is cached in memory and mirrored atomically to `latest.json` in the per-user data dir (`$XDG_DATA_HOME/kscope` by default, `--data-dir` to override). It sticks around — across restarts of either binary — until the next invocation replaces it.
 
 ```
 User picks scope  ──▶  POST /api/graph/refresh  ──▶  graph.Discover()  ──▶  store.Set()
@@ -100,7 +100,10 @@ See `docs/spec-v1.md` §3 for the full model. The essentials:
 
 ```go
 type Scope struct {
-    Namespaces []string `json:"namespaces"` // empty = every namespace
+    Context      string   `json:"context,omitempty"` // kubeconfig context; empty = current-context
+    Namespaces   []string `json:"namespaces"`        // empty = every namespace
+    IncludeInfra bool     `json:"includeInfra,omitempty"` // cluster Nodes + control-plane
+    IncludeCRDs  bool     `json:"includeCRDs,omitempty"`  // CRDs + their instances
 }
 type Snapshot struct {
     Scope     Scope       `json:"scope"`
