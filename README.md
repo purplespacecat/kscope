@@ -90,6 +90,25 @@ Wails injects (`web/src/lib/desktop.ts`), never by importing the CLI-generated
 it would break `npm run build` and the browser dev workflow. Every function in
 that adapter degrades to a browser-native equivalent.
 
+### Packages (.rpm / .deb)
+
+```bash
+go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+VERSION=1.2.3 ./scripts/package.sh    # -> dist/
+```
+
+Installs the binary to `/usr/bin/kscope-desktop`, a desktop entry, and the icon
+— so kscope appears in the application launcher. The webview is loaded at
+runtime rather than bundled, so it's a real package dependency
+(`webkit2gtk4.1`/`gtk3` on rpm, `libwebkit2gtk-4.1-0`/`libgtk-3-0` on deb).
+
+`VERSION` is mandatory: nfpm expands `${VERSION}` but **not** shell defaults
+like `${VERSION:-0.0.0}` — it treats that as a literal and silently labels
+every package `0.0.0~rc0`. `scripts/package.sh` refuses to run without it.
+
+Tagging `v*` builds and attaches these to a GitHub release
+(`.github/workflows/build.yml`).
+
 ### k9s plugin
 
 Press `Shift-G` on any resource in k9s to open it in kscope.
