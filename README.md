@@ -65,6 +65,25 @@ What the desktop build adds beyond the browser one:
   Position is deliberately not persisted: under Wayland a client cannot query
   or set its own absolute window position.
 
+- **Single instance with focus handoff.** Launching a second time doesn't open
+  a second window: the new process hands its arguments to the running instance
+  and exits. That is both the single-instance lock and the transport an
+  external tool uses to say "show me this resource":
+
+  ```bash
+  kscope-desktop --focus-namespace cert-manager \
+                 --focus-kind deployments --focus-name cert-manager-webhook
+  ```
+
+  `--focus-kind` accepts either a Kind (`Deployment`) or a plural resource name
+  (`deployments`), because different tools supply different forms. It's only a
+  tie-breaker — namespace+name is usually unique on its own. A resource that
+  isn't in the current snapshot produces an explanatory banner rather than
+  silently doing nothing.
+
+  Note the second process exits with **status 1** even on success; that's how
+  Wails signals "handed off to the running instance".
+
 The frontend reaches these through the `window.runtime` / `window.go` globals
 Wails injects (`web/src/lib/desktop.ts`), never by importing the CLI-generated
 `web/wailsjs/` directory — that only exists after a Wails build, so importing

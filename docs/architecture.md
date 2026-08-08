@@ -59,6 +59,21 @@ would loop out to the dev server) and answers non-GET requests with a blanket
 both. A corollary: the Vite proxy in `web/vite.config.ts` is only used by the
 browser dev workflow — `wails dev` never touches it.
 
+Single-instance and the focus handoff use Wails' own `SingleInstanceLock`
+(dbus on Linux) rather than a hand-rolled socket: it is cross-platform, it
+delivers the second process's argv, and the second process exits by itself.
+Focus references are resolved **server-side** by scanning the snapshot's nodes
+for a namespace+name match (`graph.ResolveNode`), with kind only as a
+tie-breaker. Deliberately not by reconstructing kscope's node-ID format —
+`web/src/lib/display.ts` already duplicates that format once, and a third copy
+in an external caller would be worse. It also means callers need not know the
+API group.
+
+Two Wails behaviours worth remembering, both discovered the hard way:
+`SetupSingleInstance` runs *after* `OnStartup` is dispatched, so a second
+process logs its startup lines before handing off and exiting; and it exits
+with **status 1** on the success path.
+
 Wails' `build:tags` is set to `webkit2_41`; Fedora 44 ships only
 `webkit2gtk-4.1`, and Wails v2 still defaults to the 4.0 pkg-config name.
 `wails build` runs `go build` in the directory containing `wails.json`, so that

@@ -40,7 +40,34 @@ export function onDesktopEvent(name: string, callback: () => void): () => void {
 export const DESKTOP_EVENTS = {
   refresh: "kscope:refresh",
   recenter: "kscope:recenter",
+  focus: "kscope:focus",
 } as const;
+
+/**
+ * A jump-to-resource request from outside the app (the k9s plugin). Either the
+ * resource resolved to a node in the current snapshot, or it didn't — in which
+ * case the payload carries enough to explain why.
+ */
+export interface FocusRequest {
+  id?: string;
+  missing?: boolean;
+  namespace?: string;
+  name?: string;
+  kind?: string;
+  /** Set when the request named a cluster other than the snapshot's. */
+  context?: string;
+}
+
+/** Like onDesktopEvent, but for events that carry a payload. */
+export function onDesktopData<T>(
+  name: string,
+  callback: (data: T) => void,
+): () => void {
+  if (!window.runtime) return () => {};
+  return window.runtime.EventsOn(name, (...data: unknown[]) =>
+    callback(data[0] as T),
+  );
+}
 
 /**
  * Save YAML to a file. Uses a native save dialog on the desktop; falls back to

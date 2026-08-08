@@ -19,6 +19,7 @@ import (
 const (
 	eventRefresh  = "kscope:refresh"
 	eventRecenter = "kscope:recenter"
+	eventFocus    = "kscope:focus"
 )
 
 // App holds the Wails context and the bits of native behaviour that HTTP

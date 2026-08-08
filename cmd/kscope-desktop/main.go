@@ -25,6 +25,7 @@ import (
 func main() {
 	dataDir := flag.String("data-dir", paths.DataDir(), "directory for persisted snapshot")
 	redactExtra := flag.String("redact-extra", "", "extra comma-separated dotted paths to redact in every manifest, e.g. spec.password")
+	focus := registerFocusFlags(flag.CommandLine)
 	flag.Parse()
 
 	// Must be set before any discovery runs — redaction happens at capture
@@ -63,6 +64,15 @@ func main() {
 			Middleware: apiMiddleware(api),
 		},
 		Menu: app.appMenu(),
+		// One window, always. A second launch (what the k9s plugin does)
+		// hands its arguments to the running instance and exits, which is
+		// both the single-instance lock and the focus transport. Wails
+		// implements it per-platform — dbus on Linux — and degrades to
+		// launching a normal second instance if that is unavailable.
+		SingleInstanceLock: &options.SingleInstanceLock{
+			UniqueId:               "com.purplespacecat.kscope",
+			OnSecondInstanceLaunch: app.onSecondInstance,
+		},
 		// Bound methods are reachable from JS as window.go.main.App.*.
 		// Only natively-backed operations belong here; data still flows
 		// over HTTP.
@@ -71,6 +81,9 @@ func main() {
 			app.startup(ctx)
 			log.Printf("kscope desktop started (data-dir=%s)", *dataDir)
 		},
+		// Focus requested on the command line that started the app. This runs
+		// after the frontend has loaded, so its event subscription is live.
+		OnDomReady: func(context.Context) { app.focus(*focus) },
 		OnBeforeClose: app.beforeClose,
 	})
 	if err != nil {

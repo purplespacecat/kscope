@@ -1,10 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Header } from "./components/Header";
 import { ScopePanel } from "./components/ScopePanel";
 import { TreePanel } from "./components/TreePanel";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailsPanel } from "./components/DetailsPanel";
 import { useLatest } from "./hooks/useGraph";
+import {
+  DESKTOP_EVENTS,
+  onDesktopData,
+  type FocusRequest,
+} from "./lib/desktop";
 import type { GraphEdge, GraphNode } from "./types/graph";
 
 // Stable empty arrays so hooks downstream don't re-fire while loading.
@@ -153,6 +158,40 @@ export default function App() {
     [nodes, allEdges, selected],
   );
 
+  // A jump-to-resource request from outside the app (the k9s plugin). Held in
+  // a ref so the subscription is created once; writing it during render is
+  // what the refs lint rule forbids.
+  const [notice, setNotice] = useState<string | null>(null);
+  const onFocusRef = useRef<(r: FocusRequest) => void>(() => {});
+  useEffect(() => {
+    onFocusRef.current = (req) => {
+      if (req.id) {
+        setSelectedId(req.id);
+        const url = new URL(window.location.href);
+        url.searchParams.set("focus", req.id);
+        window.history.replaceState(null, "", url);
+        setNotice(null);
+        return;
+      }
+      // Not in this snapshot. Saying so beats looking like the keystroke was
+      // swallowed; the user's fix is to widen the scope and re-run discovery.
+      const qualified = req.namespace ? `${req.namespace}/${req.name}` : req.name;
+      const what = req.kind ? `${req.kind} ${qualified}` : qualified;
+      setNotice(
+        req.context
+          ? `${what} is in context "${req.context}", but this snapshot is from "${snapshot?.cluster?.context ?? "another cluster"}".`
+          : `${what} isn't in this snapshot — run discovery including its namespace.`,
+      );
+    };
+  });
+  useEffect(
+    () =>
+      onDesktopData<FocusRequest>(DESKTOP_EVENTS.focus, (r) =>
+        onFocusRef.current(r),
+      ),
+    [],
+  );
+
   return (
     <div className="flex h-full flex-col">
       <Header snapshot={snapshot} />
@@ -166,6 +205,18 @@ export default function App() {
           />
         </aside>
         <main className="relative flex-1 bg-slate-100">
+          {notice && (
+            <div className="absolute inset-x-0 top-0 z-20 flex items-start gap-3 bg-amber-100 px-4 py-2 text-xs text-amber-900">
+              <span className="flex-1">{notice}</span>
+              <button
+                type="button"
+                onClick={() => setNotice(null)}
+                className="shrink-0 font-medium underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {snapshot && !snapshot.cluster && (
             <div className="absolute inset-x-0 top-0 z-10 bg-amber-50 px-4 py-2 text-xs text-amber-800">
               This snapshot predates the current schema — run discovery to
