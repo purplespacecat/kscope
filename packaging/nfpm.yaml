@@ -1,0 +1,51 @@
+# nfpm config for the kscope desktop app: one spec, both .deb and .rpm.
+#
+#   nfpm package -f packaging/nfpm.yaml -p rpm -t dist/
+#   nfpm package -f packaging/nfpm.yaml -p deb -t dist/
+#
+# Expects `wails build` to have produced cmd/kscope-desktop/build/bin/
+# kscope-desktop first, and VERSION to be set (CI sets it from the release
+# tag). nfpm expands ${VAR} but *not* shell defaults like ${VAR:-x} — it
+# silently treats the whole thing as a literal and every package comes out
+# tagged 0.0.0~rc0, so don't reintroduce that form.
+name: kscope
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Artem Filinov <afilinov93@gmail.com>
+description: |
+  Interactive map of a Kubernetes cluster.
+  Runs a discovery pass over a chosen scope and renders the result as a
+  collapsible hierarchy tree plus a focused relationship graph, with health
+  rollups, Flux GitOps links and redacted manifests.
+vendor: purplespacecat
+homepage: https://github.com/purplespacecat/kscope
+license: MIT
+
+contents:
+  - src: ./cmd/kscope-desktop/build/bin/kscope-desktop
+    dst: /usr/bin/kscope-desktop
+  - src: ./packaging/kscope.desktop
+    dst: /usr/share/applications/kscope.desktop
+  - src: ./cmd/kscope-desktop/build/appicon.png
+    dst: /usr/share/icons/hicolor/512x512/apps/kscope.png
+  - src: ./LICENSE
+    dst: /usr/share/doc/kscope/LICENSE
+
+# The webview is loaded at runtime, not bundled, so it has to be a real
+# dependency. The package names differ per distro family, hence the overrides
+# rather than a shared `depends:`.
+overrides:
+  rpm:
+    depends:
+      - webkit2gtk4.1
+      - gtk3
+  deb:
+    depends:
+      - libwebkit2gtk-4.1-0
+      - libgtk-3-0
+
+rpm:
+  group: Applications/System

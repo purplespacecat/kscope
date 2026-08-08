@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=kscope
+GenericName=Kubernetes Visualizer
+Comment=Interactive map of a Kubernetes cluster
+Exec=kscope-desktop
+Icon=kscope
+Terminal=false
+# One main category (Development) plus the Monitor sub-category. Adding System
+# as well silences validate's hint but makes the app appear twice in the menu.
+Categories=Development;Monitor;
+Keywords=kubernetes;k8s;cluster;graph;gitops;
+# Ties the window back to this entry so the shell shows the app's own icon and
+# name instead of a generic placeholder. GTK derives the class from the
+# executable name, so this must track the binary, not the product name.
+StartupWMClass=kscope-desktop

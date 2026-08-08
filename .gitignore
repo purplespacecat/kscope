@@ -23,3 +23,7 @@ kubeconfig
 /web/wailsjs/
 /web/package.json.md5
 /cmd/kscope-desktop/build/bin/
+
+# Packaged artifacts (scripts/package.sh). Note build/appicon.png above it is
+# deliberately tracked — Wails and the .rpm/.deb both source the icon there.
+/dist/
