@@ -9,6 +9,7 @@
 
 interface WailsRuntime {
   EventsOn(name: string, callback: (...data: unknown[]) => void): () => void;
+  BrowserOpenURL(url: string): void;
 }
 
 interface BoundApp {
@@ -67,6 +68,19 @@ export function onDesktopData<T>(
   return window.runtime.EventsOn(name, (...data: unknown[]) =>
     callback(data[0] as T),
   );
+}
+
+/**
+ * Click handler for external links (target="_blank" anchors). In the Wails
+ * webview a _blank navigation asks WebKit for a new window and nothing
+ * handles that request, so the click silently does nothing — the link must be
+ * routed to the OS browser via BrowserOpenURL instead. In a normal browser
+ * this is a no-op and the anchor works as written.
+ */
+export function onExternalLinkClick(e: { preventDefault(): void }, url: string): void {
+  if (!window.runtime?.BrowserOpenURL) return; // browser: let the anchor act
+  e.preventDefault();
+  window.runtime.BrowserOpenURL(url);
 }
 
 /**
