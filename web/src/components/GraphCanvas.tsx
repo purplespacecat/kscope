@@ -51,7 +51,7 @@ const GROUP_AT = 3;
 const GROUP_EXEMPT = new Set(["Namespace"]);
 
 // Dwell time before the hover tooltip (full untruncated name) appears.
-const HOVER_DELAY_MS = 3000;
+const HOVER_DELAY_MS = 1500;
 
 interface Layout {
   flowNodes: FlowNode[];
@@ -550,6 +550,25 @@ export function GraphCanvas({
   };
   useEffect(() => clearTip, []); // clear pending timer on unmount
 
+  // Any view change must dismiss the tooltip immediately. A selection change
+  // remounts <ReactFlow> (keyed on selectedId), which destroys the node the
+  // mouse was over — so its onNodeMouseLeave never fires and the tooltip
+  // would linger over the new view. This also covers selections made outside
+  // the canvas (tree panel, k9s focus handoff). Render-time adjustment
+  // instead of an effect, same pattern as ScopePanel.
+  const [seenSelectedId, setSeenSelectedId] = useState(selectedId);
+  if (selectedId !== seenSelectedId) {
+    setSeenSelectedId(selectedId);
+    if (tip) setTip(null);
+  }
+  // The dwell timer needs the same treatment: a timer scheduled in the old
+  // view must not pop a ghost tooltip after navigation. Refs can't be written
+  // during render, so the schedule-time selectedId is compared at fire time.
+  const selectedRef = useRef(selectedId);
+  useEffect(() => {
+    selectedRef.current = selectedId;
+  }, [selectedId]);
+
   const trackMouse = (e: React.MouseEvent) => {
     const r = wrapRef.current?.getBoundingClientRect();
     mousePos.current = { x: e.clientX - (r?.left ?? 0), y: e.clientY - (r?.top ?? 0) };
@@ -606,6 +625,10 @@ export function GraphCanvas({
         // and "panning" on one flings the entire grid off-screen.
         nodesDraggable={false}
         onNodeClick={(_, n) => {
+          // Dismiss on click even when selectedId won't change (re-clicking
+          // the selected node, toggling a group) — the layout still shifts
+          // under the tooltip.
+          clearTip();
           const d = n.data as { raw?: GraphNode; groupToggle?: string };
           if (d.groupToggle) {
             const gid = d.groupToggle;
@@ -625,6 +648,9 @@ export function GraphCanvas({
           trackMouse(e);
           if (tipTimer.current) clearTimeout(tipTimer.current);
           tipTimer.current = setTimeout(() => {
+            // The view changed while this timer was pending — the node this
+            // tooltip describes is gone; don't pop a ghost.
+            if (selectedRef.current !== selectedId) return;
             const { x, y } = mousePos.current;
             const width = wrapRef.current?.clientWidth ?? Infinity;
             setTip({ node: raw, x, y, flip: x > width - 340 });
@@ -632,7 +658,10 @@ export function GraphCanvas({
         }}
         onNodeMouseMove={trackMouse}
         onNodeMouseLeave={clearTip}
-        onPaneClick={() => onSelect(null)}
+        onPaneClick={() => {
+          clearTip();
+          onSelect(null);
+        }}
       >
         <Background />
         <Controls />
