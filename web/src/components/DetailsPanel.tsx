@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GraphEdge, GraphNode, Snapshot } from "../types/graph";
 import { useManifest } from "../hooks/useGraph";
-import { saveManifest } from "../lib/desktop";
+import { onExternalLinkClick, saveManifest } from "../lib/desktop";
 import {
   HEALTH_DOT,
   HEALTH_LABEL,
@@ -241,6 +241,7 @@ export function DetailsPanel({
                   href={node.gitops.webURL}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={(e) => onExternalLinkClick(e, node.gitops!.webURL!)}
                   className="inline-block rounded bg-fuchsia-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-fuchsia-700"
                 >
                   Open in Git ↗
@@ -348,6 +349,7 @@ export function DetailsPanel({
                   href={l.url}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={(e) => onExternalLinkClick(e, l.url)}
                   className="block truncate text-blue-600 hover:underline"
                   title={l.url}
                 >
