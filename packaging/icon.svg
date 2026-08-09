@@ -27,7 +27,6 @@
     <circle cx="216" cy="366" r="21"/>
     <circle cx="296" cy="366" r="21"/>
   </g>
-  <!-- the focused node: a ring, the "scope" in kscope -->
-  <circle cx="340" cy="256" r="27" fill="#2557C7" stroke="#FFFFFF" stroke-width="13"/>
+  <circle cx="340" cy="256" r="27" fill="#FFFFFF"/>
   <circle cx="384" cy="366" r="21" fill="#FFFFFF"/>
 </svg>
