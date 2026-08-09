@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"flag"
 	"io/fs"
 	"log"
@@ -20,7 +21,15 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
+
+// On macOS and Windows the app icon is baked in at build/package time, but on
+// Linux Wails only sets a window icon if handed the bytes explicitly
+// (options.Linux.Icon) — without this the window shows a generic fallback.
+//
+//go:embed build/appicon.png
+var appIcon []byte
 
 func main() {
 	dataDir := flag.String("data-dir", paths.DataDir(), "directory for persisted snapshot")
@@ -64,6 +73,10 @@ func main() {
 			Middleware: apiMiddleware(api),
 		},
 		Menu: app.appMenu(),
+		Linux: &linux.Options{
+			Icon:        appIcon,
+			ProgramName: "kscope",
+		},
 		// One window, always. A second launch (what the k9s plugin does)
 		// hands its arguments to the running instance and exits, which is
 		// both the single-instance lock and the focus transport. Wails
