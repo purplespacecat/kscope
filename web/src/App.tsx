@@ -137,6 +137,12 @@ export default function App() {
     () => new URLSearchParams(window.location.search).get("focus"),
   );
 
+  // Panel visibility. Session-only by design: a fresh launch starts with
+  // everything visible. Collapsing the details panel keeps the selection —
+  // unlike its ✕, which deselects.
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
+
   const nodes = snapshot?.nodes ?? NO_NODES;
   const allEdges = snapshot?.edges ?? NO_EDGES;
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
@@ -196,15 +202,52 @@ export default function App() {
     <div className="flex h-full flex-col">
       <Header snapshot={snapshot} />
       <div className="flex min-h-0 flex-1">
-        <aside className="flex h-full w-72 flex-col border-r border-slate-200 bg-white">
-          <ScopePanel snapshot={snapshot} />
-          <TreePanel
-            nodes={nodes}
-            selectedId={selected?.id ?? null}
-            onSelect={select}
-          />
-        </aside>
+        {leftOpen && (
+          <aside className="flex h-full w-72 flex-col border-r border-slate-200 bg-white">
+            <ScopePanel
+              snapshot={snapshot}
+              onCollapse={() => setLeftOpen(false)}
+            />
+            <TreePanel
+              nodes={nodes}
+              selectedId={selected?.id ?? null}
+              onSelect={select}
+            />
+          </aside>
+        )}
         <main className="relative flex-1 bg-slate-100">
+          {/* Reopen affordance while the sidebar is collapsed — sits where
+              the sidebar's own collapse button was, so the control doesn't
+              jump around. */}
+          {!leftOpen && (
+            <button
+              type="button"
+              onClick={() => setLeftOpen(true)}
+              aria-label="Expand sidebar"
+              title="Expand sidebar"
+              className="absolute left-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-700"
+            >
+              <svg viewBox="0 0 8 8" className="h-2.5 w-2.5 fill-current">
+                <path d="M2 0 L6 4 L2 8 Z" />
+              </svg>
+            </button>
+          )}
+          {/* Reopen affordance for a collapsed details panel. The panel is
+              persistent (cluster overview when nothing is selected), so this
+              exists whenever it's collapsed. */}
+          {!rightOpen && (
+            <button
+              type="button"
+              onClick={() => setRightOpen(true)}
+              aria-label="Expand details"
+              title="Expand details"
+              className="absolute right-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-700"
+            >
+              <svg viewBox="0 0 8 8" className="h-2.5 w-2.5 fill-current">
+                <path d="M6 0 L2 4 L6 8 Z" />
+              </svg>
+            </button>
+          )}
           {notice && (
             <div className="absolute inset-x-0 top-0 z-20 flex items-start gap-3 bg-amber-100 px-4 py-2 text-xs text-amber-900">
               <span className="flex-1">{notice}</span>
@@ -253,14 +296,17 @@ export default function App() {
             />
           )}
         </main>
-        <DetailsPanel
-          node={selected}
-          byId={byId}
-          edges={allEdges}
-          snapshotTs={snapshot?.timestamp}
-          onSelect={select}
-          onClose={() => select(null)}
-        />
+        {rightOpen && (
+          <DetailsPanel
+            node={selected}
+            byId={byId}
+            edges={allEdges}
+            snapshot={snapshot}
+            snapshotTs={snapshot?.timestamp}
+            onSelect={select}
+            onCollapse={() => setRightOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

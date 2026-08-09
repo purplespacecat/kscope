@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { GraphEdge, GraphNode } from "../types/graph";
+import type { GraphEdge, GraphNode, Snapshot } from "../types/graph";
 import { useManifest } from "../hooks/useGraph";
 import { saveManifest } from "../lib/desktop";
 import {
@@ -17,9 +17,12 @@ interface Props {
   node: GraphNode | null;
   byId: Map<string, GraphNode>;
   edges: GraphEdge[];
+  /** For the no-selection overview; snapshotTs alone isn't enough there. */
+  snapshot: Snapshot | null | undefined;
   snapshotTs?: string;
   onSelect: (node: GraphNode) => void;
-  onClose: () => void;
+  /** Collapse the panel without losing the selection. */
+  onCollapse: () => void;
 }
 
 interface RelatedRow {
@@ -32,9 +35,10 @@ export function DetailsPanel({
   node,
   byId,
   edges,
+  snapshot,
   snapshotTs,
   onSelect,
-  onClose,
+  onCollapse,
 }: Props) {
   // Hooks run unconditionally (rules of hooks); the null guard comes after.
   const manifest = useManifest(node?.id ?? null, snapshotTs);
@@ -66,7 +70,67 @@ export function DetailsPanel({
     return rows;
   }, [node, edges, byId]);
 
-  if (!node) return null;
+  // The panel is persistent: with no selection it shows a cluster overview
+  // instead of vanishing, so its collapse control never disappears from the
+  // layout and a pane-click (deselect) doesn't yank the panel away.
+  if (!node) {
+    return (
+      <aside className="flex h-full w-96 flex-col border-l border-slate-200 bg-white">
+        <div className="flex items-start border-b border-slate-200 px-4 py-3">
+          <CollapseButton onCollapse={onCollapse} />
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Cluster
+            </div>
+            <div className="truncate text-sm font-medium text-slate-900">
+              {snapshot?.cluster?.context ?? "No snapshot yet"}
+            </div>
+          </div>
+        </div>
+        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+          {snapshot ? (
+            <>
+              <section>
+                <SectionTitle>Overview</SectionTitle>
+                <dl className="space-y-1 text-xs text-slate-600">
+                  <OverviewRow label="Server" value={snapshot.cluster?.server} />
+                  <OverviewRow
+                    label="Version"
+                    value={[snapshot.cluster?.version, snapshot.cluster?.distro]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  />
+                  <OverviewRow
+                    label="Last run"
+                    value={new Date(snapshot.timestamp).toLocaleString()}
+                  />
+                  <OverviewRow
+                    label="Namespaces"
+                    value={
+                      snapshot.scope.namespaces.length > 0
+                        ? snapshot.scope.namespaces.join(", ")
+                        : "all"
+                    }
+                  />
+                  <OverviewRow
+                    label="Resources"
+                    value={`${snapshot.nodes.length} nodes, ${snapshot.edges.length} edges`}
+                  />
+                </dl>
+              </section>
+              <p className="text-xs text-slate-400">
+                Select a resource in the tree or graph to inspect it.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-slate-400">
+              Run a discovery to populate the map.
+            </p>
+          )}
+        </div>
+      </aside>
+    );
+  }
   const labels = Object.entries(node.labels ?? {});
   // Official docs for the kind, ahead of any node-specific links (repos etc.).
   const docsLink = kindDocsUrl(node.kind, node.name);
@@ -74,8 +138,9 @@ export function DetailsPanel({
 
   return (
     <aside className="flex h-full w-96 flex-col border-l border-slate-200 bg-white">
-      <div className="flex items-start justify-between border-b border-slate-200 px-4 py-3">
-        <div className="min-w-0">
+      <div className="flex items-start border-b border-slate-200 px-4 py-3">
+        <CollapseButton onCollapse={onCollapse} />
+        <div className="min-w-0 flex-1">
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             {node.kind}
             {node.apiVersion && (
@@ -109,14 +174,6 @@ export function DetailsPanel({
             </div>
           )}
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-slate-400 hover:text-slate-700"
-          aria-label="Close"
-        >
-          ×
-        </button>
       </div>
 
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
@@ -343,6 +400,35 @@ function SectionTitle({
       className={`text-xs font-semibold uppercase tracking-wide text-slate-400 ${noMargin ? "" : "mb-1.5"}`}
     >
       {children}
+    </div>
+  );
+}
+
+// Collapse chevron — mirrors the sidebar's header button, same row height so
+// the two arrows sit level. Collapsing keeps the selection; reopening is the
+// floating button App renders at the canvas's top-right.
+function CollapseButton({ onCollapse }: { onCollapse: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onCollapse}
+      aria-label="Collapse details"
+      title="Collapse details"
+      className="mr-2 flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+    >
+      <svg viewBox="0 0 8 8" className="h-2.5 w-2.5 fill-current">
+        <path d="M2 0 L6 4 L2 8 Z" />
+      </svg>
+    </button>
+  );
+}
+
+function OverviewRow({ label, value }: { label: string; value?: string }) {
+  if (!value) return null;
+  return (
+    <div className="flex gap-2">
+      <dt className="w-24 shrink-0 text-slate-400">{label}</dt>
+      <dd className="min-w-0 break-all">{value}</dd>
     </div>
   );
 }

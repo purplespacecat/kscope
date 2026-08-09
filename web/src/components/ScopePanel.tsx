@@ -5,12 +5,14 @@ import type { Snapshot } from "../types/graph";
 
 interface Props {
   snapshot: Snapshot | null | undefined;
+  /** Collapse the whole sidebar (button lives in this panel's header). */
+  onCollapse: () => void;
 }
 
 // Left-side form. Lets the user pick which cluster and which namespaces the
 // next invocation should cover. Seeds itself from whatever scope produced the
 // current snapshot.
-export function ScopePanel({ snapshot }: Props) {
+export function ScopePanel({ snapshot, onCollapse }: Props) {
   // "" means the kubeconfig's current-context, matching the server's reading
   // of an absent Scope.Context.
   const [kubeContext, setKubeContext] = useState("");
@@ -98,11 +100,24 @@ export function ScopePanel({ snapshot }: Props) {
   // capped height so the resource tree below always keeps room.
   return (
     <section className="flex max-h-[45%] shrink-0 flex-col border-b border-slate-200">
-      <div className="border-b border-slate-200 px-4 py-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Scope
+      <div className="flex items-start justify-between border-b border-slate-200 px-4 py-3">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Scope
+          </div>
+          <div className="text-sm text-slate-500">Cluster and namespaces to discover</div>
         </div>
-        <div className="text-sm text-slate-500">Cluster and namespaces to discover</div>
+        <button
+          type="button"
+          onClick={onCollapse}
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+        >
+          <svg viewBox="0 0 8 8" className="h-2.5 w-2.5 fill-current">
+            <path d="M6 0 L2 4 L6 8 Z" />
+          </svg>
+        </button>
       </div>
 
       {/* Only worth showing when there's a choice to make. */}
