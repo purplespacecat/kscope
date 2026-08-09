@@ -186,7 +186,9 @@ spec: [`docs/spec-v1.md`](docs/spec-v1.md).
 cd cmd/kscope-desktop && wails dev
 
 # Tests
-go test ./...
+go test ./...                    # backend
+npm --prefix web test            # frontend (vitest + Testing Library)
+npm --prefix web run test:watch  # frontend, watch mode
 
 # Packages (.rpm/.deb via nfpm; VERSION is mandatory — the script enforces it)
 VERSION=1.2.3 ./scripts/package.sh    # → dist/
