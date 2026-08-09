@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
   MiniMap,
   Panel,
   ReactFlow,
+  useOnViewportChange,
   useReactFlow,
   type Edge as FlowEdge,
   type Node as FlowNode,
+  type Viewport,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
 import { DESKTOP_EVENTS, onDesktopEvent } from "../lib/desktop";
@@ -488,24 +490,63 @@ function layout(
 
 // Escape hatch for lost viewports: one click re-frames the whole graph.
 // (Needs the ReactFlow context, hence a child component inside <ReactFlow>.)
+//
+// Only rendered once the view has actually left the fitted "home" position:
+// the fitted viewport is captured just after mount, every pan/zoom end is
+// compared against it, and clicking Re-center animates back to home — whose
+// own move-end then compares equal and hides the button again. The component
+// itself stays mounted so the desktop-menu subscription survives while the
+// button is hidden.
 function RecenterButton() {
-  const { fitView } = useReactFlow();
+  const { fitView, getViewport } = useReactFlow();
+  const [moved, setMoved] = useState(false);
+  const home = useRef<Viewport | null>(null);
+
+  // Capture the fitted viewport as "home". Double-rAF: the initial fitView
+  // applies after nodes are measured, a frame or two past mount.
+  useEffect(() => {
+    let inner: number;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        home.current = getViewport();
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [getViewport]);
+
+  useOnViewportChange({
+    onEnd: (vp) => {
+      const h = home.current;
+      if (!h) return;
+      const atHome =
+        Math.abs(vp.x - h.x) < 1 &&
+        Math.abs(vp.y - h.y) < 1 &&
+        Math.abs(vp.zoom - h.zoom) < 0.001;
+      setMoved(!atHome);
+    },
+  });
+
+  const recenter = useCallback(
+    () => fitView({ padding: 0.1, duration: 300 }),
+    [fitView],
+  );
 
   // The desktop View menu drives the same action. Subscribing here rather than
   // in App keeps it next to the only code that holds the ReactFlow context.
   useEffect(
-    () =>
-      onDesktopEvent(DESKTOP_EVENTS.recenter, () =>
-        fitView({ padding: 0.1, duration: 300 }),
-      ),
-    [fitView],
+    () => onDesktopEvent(DESKTOP_EVENTS.recenter, recenter),
+    [recenter],
   );
 
+  if (!moved) return null;
   return (
-    <Panel position="top-right">
+    <Panel position="top-center">
       <button
         type="button"
-        onClick={() => fitView({ padding: 0.1, duration: 300 })}
+        onClick={recenter}
         className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm hover:bg-slate-50"
         title="Fit the whole graph back into view"
       >
