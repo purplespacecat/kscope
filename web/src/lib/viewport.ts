@@ -18,40 +18,6 @@ export interface Placed {
 }
 
 /**
- * Suffix of an expanded kind-group's header card. Shared with the layout so
- * the two can't drift — anchoring depends on predicting this id exactly.
- */
-export const HEADER_SUFFIX = "__h";
-
-/**
- * Candidate ids for a kind-group's visual representative after a toggle, best
- * first. Toggling replaces nodes rather than moving them: expanded, the group is
- * a container `gid` plus a header card `gid__h`; collapsed, it is a single card
- * `gid`. Offering both candidates and taking whichever exists afterwards avoids
- * having to predict the direction at click time — a prediction that misreads a
- * click on the expanded container, whose id is also `gid`.
- */
-export function groupAnchorIds(gid: string): string[] {
-  return [`${gid}${HEADER_SUFFIX}`, gid];
-}
-
-/**
- * First candidate with a known position, or undefined if none resolve — in
- * which case the caller leaves the viewport alone. Failing to anchor beats
- * panning somewhere arbitrary.
- */
-export function firstResolved(
-  abs: Map<string, Point>,
-  ids: string[],
-): Point | undefined {
-  for (const id of ids) {
-    const p = abs.get(id);
-    if (p) return p;
-  }
-  return undefined;
-}
-
-/**
  * Absolute positions for every node. Container members carry positions
  * relative to their parent (`parentId` + `extent: "parent"`), so raw values
  * aren't comparable across a reflow.

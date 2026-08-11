@@ -46,9 +46,15 @@ Object.defineProperties(globalThis.HTMLElement.prototype, {
 (globalThis.SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox =
   () => ({ x: 0, y: 0, width: 0, height: 0 }) as DOMRect;
 
+// Mirrors GraphCanvas's own constant; the box must clear the card, not merely
+// sit a pixel below it.
+const NODE_H = 56;
+
 const NS = "core/namespace/web";
 const DEP = "apps/deployment/web/api";
 const POD_GROUP = `__kg__${DEP}__Pod`;
+// The members-only box that appears below the card once the group is expanded.
+const POD_BOX = `${POD_GROUP}__m`;
 const pods = Array.from({ length: 6 }, (_, i) => `core/pod/web/api-6d4f${i}`);
 
 // A SECOND namespace subtree is load-bearing, not scenery. With only one branch,
@@ -168,20 +174,45 @@ describe("focus anchoring", () => {
     });
   });
 
-  it("expands a group card and collapses it again", async () => {
+  it("expands and collapses from the card, which stays put throughout", async () => {
     renderApp();
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
     expect(nodeEl(pods[0])).toBeNull(); // collapsed: members not rendered
 
     fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeTruthy());
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
     expect(nodeEl(pods[0])).toBeTruthy();
 
-    // Round-trip guards the toggle direction: it is read from the clicked card's
-    // id, so a card that has just expanded must collapse rather than re-expand.
-    fireEvent.click(nodeEl(`${POD_GROUP}__h`)!);
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeNull());
+    // The card is the same node in both states — it never leaves the layout — so
+    // the round trip is driven from it rather than from a replacement header.
+    fireEvent.click(nodeEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeNull());
     expect(nodeEl(pods[0])).toBeNull();
+    expect(nodeEl(POD_GROUP)).toBeTruthy();
+  });
+
+  it("puts the members in a box below the card, not in a box beside it", async () => {
+    // The reported bug: the expanded group left the parent's grid and became a
+    // container ranked as the grid's *sibling*, so dagre placed the two side by
+    // side, the ~1300px box overflowed the viewport and the grid was shoved off
+    // the opposite edge.
+    //
+    // Only placement is asserted here. The card's *screen* position — the "don't
+    // throw me around" half — can't be checked in jsdom: the initial fitView
+    // never completes (nothing is measured), so it retries on this very node
+    // update and permanently overwrites the anchor pan. Measured directly: zoom
+    // goes 1 → 0.07 on the expand, which anchoring never does. That half is
+    // browser-verified.
+    renderApp();
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+
+    fireEvent.click(nodeEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
+
+    const card = translateOf(nodeEl(POD_GROUP)!);
+    const box = translateOf(nodeEl(POD_BOX)!);
+    expect(box.y).toBeGreaterThan(card.y); // below…
+    expect(box.y - card.y).toBeGreaterThan(NODE_H); // …by more than the card's own height
   });
 
   // The remount decision needs its own observable. fitView is a no-op under
@@ -218,19 +249,20 @@ describe("focus anchoring", () => {
     });
   });
 
-  it("collapses when the expanded group's container background is clicked", async () => {
+  it("collapses when the members box background is clicked", async () => {
     renderApp();
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
 
-    fireEvent.click(nodeEl(POD_GROUP)!); // the collapsed card → expand
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeTruthy());
+    fireEvent.click(nodeEl(POD_GROUP)!); // the card → expand
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
 
-    // Once expanded, the node carrying id POD_GROUP is the translucent container
-    // box, not the card — same id, opposite state. Its padding and the gaps
-    // between members are clickable, and clicking there must collapse the group.
-    fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeNull());
+    // The box's padding and the gaps between members are clickable, and clicking
+    // there collapses the group. It carries its own id rather than sharing the
+    // card's, which is what previously made a background click read as "expand".
+    fireEvent.click(nodeEl(POD_BOX)!);
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeNull());
     expect(nodeEl(pods[0])).toBeNull();
+    expect(nodeEl(POD_GROUP)).toBeTruthy();
   });
 
   it("leaves the selection alone when a group card is toggled", async () => {
@@ -239,7 +271,7 @@ describe("focus anchoring", () => {
     expect(await screen.findByText(NOTHING_SELECTED)).toBeInTheDocument();
 
     fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeTruthy());
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
 
     // Group cards aren't resources: expanding one must not hijack the details
     // panel or re-root the focus subgraph.

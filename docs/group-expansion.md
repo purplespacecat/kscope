@@ -1,6 +1,7 @@
 # Group expansion — members below, card stays put
 
-Status: **designed**, not yet implemented.
+Status: **implemented** on `fix/group-expand-below`. Placement is covered by
+component tests; the anti-throw half is browser-only (see §7).
 
 ## 1. Problem
 
@@ -113,15 +114,26 @@ Container **members** get meaningless positions under jsdom — xyflow clamps ev
 mixed slots avoids that entirely: the card is then an ordinary dagre node with a
 real position, which is exactly the node under test.
 
-- the card's **layout** position is identical before and after expanding — the
-  literal requirement, and the assertion that would have caught the current bug;
-- the members box appears **below** the card (greater `y`);
-- collapsing removes the box and leaves the card in place;
-- the card's **screen** position still holds across the toggle, so anchoring keeps
-  working through the new rank structure.
+- the members box appears **below** the card, clearing it by more than a card's
+  height — this is the assertion that fails against the old sibling-box layout;
+- expanding and collapsing both work from the card, which is present throughout;
+- collapsing from the **box background** works, and leaves the card in place.
 
-Not covered: the multi-box side-by-side case and the visual placement of a box
-whose card is packed inside a grid, both of which need real measurement.
+**Two things measurement corrected during implementation**, both of which this
+document originally over-promised:
+
+1. *The card's layout position is not identical.* Expanding widens the subtree, so
+   dagre recentres and the card's layout `x` moves (measured: 230 → 556 on the test
+   fixture). §5 anticipated this; the test does not assert otherwise.
+2. *The card's screen position cannot be asserted in jsdom.* Expanding adds nodes,
+   which triggers the initial `fitView` that never completed for want of
+   measurement — it lands after the anchor pan and permanently overwrites it
+   (measured: zoom goes 1 → 0.07 on the expand, which anchoring never does). So
+   the "don't throw me around" half is **browser-verified only**, exactly as it is
+   for container geometry.
+
+Also not covered: the multi-box side-by-side case, and the placement of a box
+whose card is packed inside a grid — the case in the original report.
 
 ## 8. Files touched
 

@@ -26,14 +26,7 @@ import {
   kindPlural,
   kindRank,
 } from "../lib/display";
-import {
-  HEADER_SUFFIX,
-  absolutePositions,
-  anchoredViewport,
-  firstResolved,
-  groupAnchorIds,
-  type Point,
-} from "../lib/viewport";
+import { absolutePositions, anchoredViewport, type Point } from "../lib/viewport";
 
 interface Props {
   nodes: GraphNode[];
@@ -59,6 +52,10 @@ const GROUP_AT = 3;
 
 // Namespaces are the primary drill path — never hide them behind a group.
 const GROUP_EXEMPT = new Set(["Namespace"]);
+
+// Suffix of an expanded group's members box. The group *card* keeps the bare id
+// in both states, so a toggle never changes what the anchor is holding.
+const MEMBER_BOX_SUFFIX = "__m";
 
 // Dwell time before the hover tooltip (full untruncated name) appears.
 const HOVER_DELAY_MS = 1500;
@@ -92,9 +89,9 @@ function gridSlot(i: number, total: number, boxW: number): { x: number; y: numbe
 // Layered "iceberg" layout with kind-grouping:
 //   - infra (control-plane, machines) ranks ABOVE the cluster node, content
 //     below;
-//   - a parent's leaf children fold by kind into expandable groups
-//     (collapsed: one card with a count; expanded: a container holding a
-//     header card plus the wrapped member grid);
+//   - a parent's leaf children fold by kind into expandable groups; the card
+//     keeps its slot either way, and expanding adds a members-only box ranked
+//     *below* it rather than a sibling box beside it;
 //   - leftover ungrouped leaves beyond WRAP_AT wrap into a plain grid;
 //   - relationship edges to packed members are dimmed, and hidden entirely
 //     while their group is collapsed.
@@ -131,18 +128,24 @@ function layout(
 
   type Slot =
     | { t: "n"; id: string }
-    | { t: "g"; gid: string; kind: string; count: number };
+    | { t: "g"; gid: string; kind: string; count: number; expanded: boolean };
   interface Container {
     id: string;
     parent: string;
     members: Slot[];
-    header?: { kind: string; count: number };
+    /** Group id this box belongs to; makes the box's background a collapse target. */
+    toggle?: string;
     w: number;
     h: number;
   }
   const containers: Container[] = [];
-  const collapsedCards: { id: string; parent: string; kind: string; count: number }[] =
-    [];
+  const groupCards: {
+    id: string;
+    parent: string;
+    kind: string;
+    count: number;
+    expanded: boolean;
+  }[] = [];
   const memberOf = new Map<string, string>(); // member id → container id
   const hiddenMembers = new Set<string>(); // members of collapsed groups
   const packed = new Set<string>(); // nodes not laid out by dagre directly
@@ -163,7 +166,15 @@ function layout(
     }
 
     const singles: string[] = [];
-    const collapsedHere: { gid: string; kind: string; count: number }[] = [];
+    const groupsHere: {
+      gid: string;
+      kind: string;
+      count: number;
+      expanded: boolean;
+    }[] = [];
+    // Members of expanded groups, to be boxed once we know what stands in for
+    // their card in the dagre graph (see below).
+    const boxesHere: { gid: string; members: string[] }[] = [];
     for (const [kind, members] of buckets) {
       if (members.length < GROUP_AT || GROUP_EXEMPT.has(kind)) {
         singles.push(...members);
@@ -172,31 +183,26 @@ function layout(
       members.sort(byKindThenName);
       const gid = `__kg__${parent}__${kind}`;
       for (const m of members) packed.add(m);
-      if (expandedGroups.has(gid)) {
-        // Expanded groups are their own boxes, siblings of the mixed grid.
-        const { w, h } = gridSize(members.length + 1); // +1: header card slot
-        containers.push({
-          id: gid,
-          parent,
-          members: members.map((id) => ({ t: "n", id }) as Slot),
-          header: { kind, count: members.length },
-          w,
-          h,
-        });
-        for (const m of members) memberOf.set(m, gid);
-        g.setNode(gid, { width: w, height: h });
-        g.setEdge(parent, gid);
-      } else {
-        collapsedHere.push({ gid, kind, count: members.length });
-        for (const m of members) hiddenMembers.add(m);
-      }
+      const expanded = expandedGroups.has(gid);
+      // The card keeps its slot in both states — expanding must not move what is
+      // already on screen — so it stays in `mixed` either way.
+      groupsHere.push({ gid, kind, count: members.length, expanded });
+      if (expanded) boxesHere.push({ gid, members });
+      else for (const m of members) hiddenMembers.add(m);
     }
 
-    // Collapsed kind-cards and singleton leaves share one mixed grid — a
-    // wide row of cards is the very thing being fixed.
+    // Group cards and singleton leaves share one mixed grid — a wide row of
+    // cards is the very thing being fixed.
     const mixed: Slot[] = [
-      ...collapsedHere.map(
-        (c) => ({ t: "g", gid: c.gid, kind: c.kind, count: c.count }) as Slot,
+      ...groupsHere.map(
+        (c) =>
+          ({
+            t: "g",
+            gid: c.gid,
+            kind: c.kind,
+            count: c.count,
+            expanded: c.expanded,
+          }) as Slot,
       ),
       ...singles.map((id) => ({ t: "n", id }) as Slot),
     ];
@@ -210,29 +216,62 @@ function layout(
       return kindRank(ka.kind) - kindRank(kb.kind) || ka.name.localeCompare(kb.name);
     });
 
+    // Whichever dagre node stands in for a group card: the grid that packs it, or
+    // the card itself when the children didn't need a grid. Members boxes hang
+    // below this, which is what keeps them out of the card's own rank.
+    let cardStandIn: (gid: string) => string;
+
     if (mixed.length > WRAP_AT) {
-      const gid = `__grid__${parent}`;
+      const gridId = `__grid__${parent}`;
       const { w, h } = gridSize(mixed.length);
-      containers.push({ id: gid, parent, members: mixed, w, h });
+      containers.push({ id: gridId, parent, members: mixed, w, h });
       for (const s of mixed) {
         if (s.t === "n") {
           packed.add(s.id);
-          memberOf.set(s.id, gid);
+          memberOf.set(s.id, gridId);
         } else {
           packed.add(s.gid);
         }
       }
-      g.setNode(gid, { width: w, height: h });
-      g.setEdge(parent, gid);
+      g.setNode(gridId, { width: w, height: h });
+      g.setEdge(parent, gridId);
+      cardStandIn = () => gridId;
     } else {
       for (const s of mixed) {
         if (s.t === "g") {
-          collapsedCards.push({ id: s.gid, parent, kind: s.kind, count: s.count });
+          groupCards.push({
+            id: s.gid,
+            parent,
+            kind: s.kind,
+            count: s.count,
+            expanded: s.expanded,
+          });
           g.setNode(s.gid, { width: NODE_W, height: NODE_H });
           g.setEdge(parent, s.gid);
         }
         // plain singles stay ordinary dagre children (not packed)
       }
+      cardStandIn = (gid) => gid;
+    }
+
+    // An expanded group's members go in their own box, ranked *below* the card
+    // rather than beside it. Ranking it as a sibling of the grid — which is what
+    // this used to do — put a ~1300px box next to the grid and shoved everything
+    // sideways off both viewport edges.
+    for (const box of boxesHere) {
+      const boxId = `${box.gid}${MEMBER_BOX_SUFFIX}`;
+      const { w, h } = gridSize(box.members.length);
+      containers.push({
+        id: boxId,
+        parent,
+        members: box.members.map((id) => ({ t: "n", id }) as Slot),
+        toggle: box.gid,
+        w,
+        h,
+      });
+      for (const m of box.members) memberOf.set(m, boxId);
+      g.setNode(boxId, { width: w, height: h });
+      g.setEdge(cardStandIn(box.gid), boxId);
     }
   }
 
@@ -391,7 +430,7 @@ function layout(
     flowNodes.push({
       id: c.id,
       position: { x: ph.x - c.w / 2, y: ph.y - c.h / 2 },
-      data: c.header ? { groupToggle: c.id } : { label: null },
+      data: c.toggle ? { groupToggle: c.toggle } : { label: null },
       style: {
         width: c.w,
         height: c.h,
@@ -400,38 +439,27 @@ function layout(
         borderRadius: 12,
       },
     });
-    const total = c.members.length + (c.header ? 1 : 0);
+    const total = c.members.length;
     let slot = 0;
-    if (c.header) {
-      flowNodes.push(
-        groupHeaderCard(
-          `${c.id}${HEADER_SUFFIX}`,
-          c.id,
-          c.header.kind,
-          c.header.count,
-          true,
-          gridSlot(slot++, total, c.w),
-          c.id,
-        ),
-      );
-    }
     for (const m of c.members) {
       const p = gridSlot(slot++, total, c.w);
       if (m.t === "n") {
         const n = byId.get(m.id);
         if (n) flowNodes.push(nodeCard(n, p, c.id));
       } else {
-        flowNodes.push(groupHeaderCard(m.gid, m.gid, m.kind, m.count, false, p, c.id));
+        flowNodes.push(
+          groupHeaderCard(m.gid, m.gid, m.kind, m.count, m.expanded, p, c.id),
+        );
       }
     }
   }
 
-  // Collapsed kind-group cards.
-  for (const cc of collapsedCards) {
+  // Kind-group cards that weren't packed into a grid.
+  for (const cc of groupCards) {
     const p = g.node(cc.id);
     if (!p) continue;
     flowNodes.push(
-      groupHeaderCard(cc.id, cc.id, cc.kind, cc.count, false, {
+      groupHeaderCard(cc.id, cc.id, cc.kind, cc.count, cc.expanded, {
         x: p.x - NODE_W / 2,
         y: p.y - NODE_H / 2,
       }),
@@ -446,14 +474,18 @@ function layout(
 
   const flowEdges: FlowEdge[] = [];
   for (const c of containers) {
+    // A members box is drawn hanging off its card even though dagre ranked it
+    // under whatever packs that card — the same layout-edge/rendered-edge split
+    // infra containment already uses.
+    const source = c.toggle ?? c.parent;
     flowEdges.push({
-      id: `${c.parent}->${c.id}`,
-      source: c.parent,
+      id: `${source}->${c.id}`,
+      source,
       target: c.id,
       style: { stroke: "#cbd5e1" },
     });
   }
-  for (const cc of collapsedCards) {
+  for (const cc of groupCards) {
     flowEdges.push({
       id: `${cc.parent}->${cc.id}`,
       source: cc.parent,
@@ -581,8 +613,8 @@ function RecenterButton() {
 
 /** The node to keep put across a reflow, and where it sat before it. */
 interface Anchor {
-  /** Ids to look for *after* the reflow, best first — see groupAnchorIds. */
-  ids: string[];
+  /** Id to look for after the reflow. Stable for cards and resources alike. */
+  id: string;
   /** The clicked node's absolute position *before* the reflow. */
   pos: Point;
   /**
@@ -615,7 +647,7 @@ function AnchorKeeper({
   useEffect(() => {
     if (!anchor || applied.current === anchor) return;
     applied.current = anchor;
-    const next = firstResolved(absPos, anchor.ids);
+    const next = absPos.get(anchor.id);
     // Unresolvable anchor: leave the viewport alone rather than jump somewhere
     // arbitrary.
     if (next) setViewport(anchoredViewport(anchor.pos, next, getViewport()));
@@ -766,13 +798,14 @@ export function GraphCanvas({
           const here = absPos.get(n.id) ?? null;
           if (d.groupToggle) {
             const gid = d.groupToggle;
-            // Direction comes from the set itself, never from the clicked id:
-            // an expanded group's *container* shares the collapsed card's id, so
-            // id equality misreads a click on the box background as "expand" and
-            // the group would never collapse. The anchor doesn't need the
-            // direction either — it offers both candidate ids.
-            if (here) {
-              setAnchor({ ids: groupAnchorIds(gid), pos: here, forSelection: selectedId });
+            // Direction comes from the set itself, never from the clicked id.
+            // The anchor holds the *card*, which keeps its id and its slot through
+            // the toggle — so this is right whether the click landed on the card
+            // or on the members box background, and `here` is deliberately unused
+            // for groups.
+            const cardPos = absPos.get(gid);
+            if (cardPos) {
+              setAnchor({ id: gid, pos: cardPos, forSelection: selectedId });
             }
             setExpandedGroups((prev) => {
               const next = new Set(prev);
@@ -785,7 +818,7 @@ export function GraphCanvas({
           if (d.raw) {
             // Resource ids are stable across the reflow, so the node itself is
             // the anchor. Batched with the selection change below.
-            if (here) setAnchor({ ids: [d.raw.id], pos: here, forSelection: d.raw.id });
+            if (here) setAnchor({ id: d.raw.id, pos: here, forSelection: d.raw.id });
             onSelect(d.raw);
           }
         }}
