@@ -1,6 +1,7 @@
 # Focus anchoring — keep the clicked node put across a reflow
 
-Status: **designed**, not yet implemented.
+Status: **implemented** on `fix/graph-focus-anchoring`. Pure geometry is
+unit-tested; the canvas wiring is verified by use (see §7).
 
 ## 1. Problem
 
@@ -70,13 +71,17 @@ render. React batches `setAnchor` with the `selectedId` update from
 
 ### 4.2 Absolute positions
 
-`layout()` gains a third return value, `absPos: Map<string, {x, y}>`.
+Container members carry positions *relative* to their parent (`parentId` +
+`extent: "parent"`), so raw `node.position` values are not comparable across a
+reflow.
 
-Required because container members carry positions *relative* to their parent
-(`parentId` + `extent: "parent"`), so raw `node.position` values are not
-comparable across a reflow. Absolute position is container origin + slot
-offset, both of which `layout()` already computes — so this needs no xyflow
-internals API and `layout()` stays pure.
+`absolutePositions(flowNodes)` resolves them by accumulating each node's
+position up its `parentId` chain. It reads only the flow nodes `layout()`
+already returns, so `layout()`'s signature is untouched and the function is
+pure and directly unit-testable — simpler than the originally designed third
+return value, which would have threaded container origins through `layout()`'s
+internals. A dangling `parentId` falls back to the raw position: failing to
+anchor beats NaN coordinates, which would corrupt the viewport instead.
 
 ### 4.3 Successor rule
 
@@ -91,6 +96,12 @@ clicked id:
 
 Anchoring a group card on `gid` alone would latch onto the *container's*
 top-left corner, so the card would visibly shift by the container padding.
+
+Which direction the toggle goes is read from the clicked card's own id
+(`groupWillExpand`): a collapsed card's id *is* `gid`, an expanded header's is
+`gid__h`. Deriving it from the `expandedGroups` set instead would let a rapid
+second click act on a render that hasn't caught up and expand twice rather than
+toggling back.
 
 ### 4.4 Viewport math
 
@@ -180,7 +191,7 @@ is a larger job than this fix and belongs in its own change.
 | --- | --- |
 | `web/src/lib/viewport.ts` | new — pure compensation math + successor mapping |
 | `web/src/lib/viewport.test.ts` | new — unit tests for the above |
-| `web/src/components/GraphCanvas.tsx` | `absPos` from `layout()`, anchor state, anchor-applying child component, `viewKey` replacing the `selectedId` remount key, `RecenterButton` home recapture |
+| `web/src/components/GraphCanvas.tsx` | anchor state, `AnchorKeeper` child inside `<ReactFlow>`, `viewKey` replacing the `selectedId` remount key, `HEADER_SUFFIX` shared with `layout()`, `RecenterButton` home recapture |
 
 `App.tsx` is unchanged: origin detection lives entirely in `GraphCanvas`, which
 already knows whether a click came from its own canvas.
