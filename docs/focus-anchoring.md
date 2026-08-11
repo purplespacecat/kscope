@@ -144,6 +144,9 @@ child rather than inline in `GraphCanvas`.
 
 If the id does not resolve after the reflow, the effect is a no-op and the
 anchor clears: the viewport stays put rather than jumping somewhere arbitrary.
+That branch has no test of its own — the helper whose miss case used to be
+unit-tested was deleted with the successor rule (§4.3), and no path now reaches
+it, since a card and a resource node both outlive their own reflow.
 
 The pan is **relative** — it reads the current viewport and applies a delta — so
 applying one anchor twice doubles the correction. StrictMode double-invokes mount
@@ -227,7 +230,6 @@ re-centers share one resolver, so they all see the same final viewport.
 
 - the compensation math of §4.4, asserted as the screen-position invariant
   rather than bare arithmetic, and at a non-1.0 zoom;
-- the compensation applies at a non-1.0 zoom (§4.4);
 - `absolutePositions` for a nested container, a dangling `parentId`, top-level
   passthrough, and a parent cycle — including that a cycle resolves identically
   whichever member is visited first, since an order-dependent break point would

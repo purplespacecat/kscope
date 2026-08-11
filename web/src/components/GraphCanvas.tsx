@@ -131,7 +131,8 @@ function layout(
     | { t: "g"; gid: string; kind: string; count: number; expanded: boolean };
   interface Container {
     id: string;
-    parent: string;
+    /** Node the rendered edge hangs off — not necessarily the dagre parent. */
+    edgeFrom: string;
     members: Slot[];
     /** Group id this box belongs to; makes the box's background a collapse target. */
     toggle?: string;
@@ -224,7 +225,7 @@ function layout(
     if (mixed.length > WRAP_AT) {
       const gridId = `__grid__${parent}`;
       const { w, h } = gridSize(mixed.length);
-      containers.push({ id: gridId, parent, members: mixed, w, h });
+      containers.push({ id: gridId, edgeFrom: parent, members: mixed, w, h });
       for (const s of mixed) {
         if (s.t === "n") {
           packed.add(s.id);
@@ -263,7 +264,9 @@ function layout(
       const { w, h } = gridSize(box.members.length);
       containers.push({
         id: boxId,
-        parent,
+        // Drawn hanging off its card, though dagre ranked it under whatever packs
+        // that card — the same split infra containment already uses.
+        edgeFrom: box.gid,
         members: box.members.map((id) => ({ t: "n", id }) as Slot),
         toggle: box.gid,
         w,
@@ -377,7 +380,6 @@ function layout(
 
   const groupHeaderCard = (
     id: string,
-    gid: string,
     kind: string,
     count: number,
     expanded: boolean,
@@ -411,7 +413,7 @@ function layout(
           </span>
         </div>
       ),
-      groupToggle: gid,
+      groupToggle: id,
     },
     style: {
       width: NODE_W,
@@ -423,7 +425,7 @@ function layout(
     },
   });
 
-  // Containers (expanded kind-groups + residual grids) and their members.
+  // Members boxes for expanded kind-groups, residual grids, and their members.
   for (const c of containers) {
     const ph = g.node(c.id);
     if (!ph) continue;
@@ -448,7 +450,7 @@ function layout(
         if (n) flowNodes.push(nodeCard(n, p, c.id));
       } else {
         flowNodes.push(
-          groupHeaderCard(m.gid, m.gid, m.kind, m.count, m.expanded, p, c.id),
+          groupHeaderCard(m.gid, m.kind, m.count, m.expanded, p, c.id),
         );
       }
     }
@@ -459,7 +461,7 @@ function layout(
     const p = g.node(cc.id);
     if (!p) continue;
     flowNodes.push(
-      groupHeaderCard(cc.id, cc.id, cc.kind, cc.count, cc.expanded, {
+      groupHeaderCard(cc.id, cc.kind, cc.count, cc.expanded, {
         x: p.x - NODE_W / 2,
         y: p.y - NODE_H / 2,
       }),
@@ -474,10 +476,7 @@ function layout(
 
   const flowEdges: FlowEdge[] = [];
   for (const c of containers) {
-    // A members box is drawn hanging off its card even though dagre ranked it
-    // under whatever packs that card — the same layout-edge/rendered-edge split
-    // infra containment already uses.
-    const source = c.toggle ?? c.parent;
+    const source = c.edgeFrom;
     flowEdges.push({
       id: `${source}->${c.id}`,
       source,

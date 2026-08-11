@@ -1,7 +1,8 @@
 # Group expansion — members below, card stays put
 
 Status: **implemented** on `fix/group-expand-below`. Placement is covered by
-component tests; the anti-throw half is browser-only (see §7).
+component tests in both packing cases; the anti-throw half is browser-only
+(see §7).
 
 ## 1. Problem
 
@@ -34,8 +35,8 @@ keeps its slot.
 
 The group card stays in the parent's `mixed` set in **both** states, so its slot
 and the grid's size are unchanged by a toggle. The `Slot` `g` variant carries
-`expanded`, which `groupHeaderCard` already takes as a parameter — the grid branch
-currently hardcodes it to `false`.
+`expanded`, which `groupHeaderCard` already took as a parameter — the grid branch
+used to hardcode it to `false`.
 
 ### 3.2 A members box, ranked below
 
@@ -97,6 +98,13 @@ share the collapsed card's id, which is what made a background click read as
   unrelated groups, which reads worse than the width. Not solved here.
 - The members box is still up to `WRAP_AT` (6) columns, ~1300px. The motivating
   case — four `GitRepositories` — is ~880px and fits.
+- **When the card is packed into a grid, the box centres under the *grid*, not
+  under its own card**, because the grid is what it hangs off in dagre. Measured
+  on a seven-kind namespace: grid spans x 239–1551, a lone 880px box centres at
+  x≈895, while a card in column 0 sits at x≈255 — so the rendered card → box edge
+  travels ~640px sideways across the grid's footprint. The box is still below
+  everything, and nothing is pushed off-screen, but "below the card" is precise
+  only in the ungridded case.
 
 ## 6. Non-goals
 
@@ -117,7 +125,13 @@ real position, which is exactly the node under test.
 - the members box appears **below** the card, clearing it by more than a card's
   height — this is the assertion that fails against the old sibling-box layout;
 - expanding and collapsing both work from the card, which is present throughout;
-- collapsing from the **box background** works, and leaves the card in place.
+- collapsing from the **box background** works, and leaves the card in place;
+- with a parent past `WRAP_AT` — seven group-forming kinds, the shape from the
+  original report — the box clears the **grid's bottom edge**, which is what
+  distinguishes a rank below from a sibling on the same rank. Comparing bare `y`
+  values passes either way, because dagre centres nodes within a rank and a
+  shorter box sits a few pixels lower than a taller grid even as its sibling; the
+  first version of this test was vacuous for exactly that reason.
 
 **Two things measurement corrected during implementation**, both of which this
 document originally over-promised:
@@ -132,8 +146,8 @@ document originally over-promised:
    the "don't throw me around" half is **browser-verified only**, exactly as it is
    for container geometry.
 
-Also not covered: the multi-box side-by-side case, and the placement of a box
-whose card is packed inside a grid — the case in the original report.
+Also not covered: the multi-box side-by-side case, and the horizontal placement
+of a box relative to its card (only its vertical rank is asserted).
 
 ## 8. Files touched
 

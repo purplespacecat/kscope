@@ -100,8 +100,10 @@ const snapshot: Snapshot = {
   stats: { counts: { Pod: 12 }, durationMs: 1 },
 };
 
+const state = vi.hoisted(() => ({ snapshot: null as unknown as Snapshot }));
+
 vi.mock("../api/client", () => ({
-  getLatest: vi.fn(async () => snapshot),
+  getLatest: vi.fn(async () => state.snapshot),
   getNamespaces: vi.fn(async () => ["web"]),
   getContexts: vi.fn(async () => []),
   getManifest: vi.fn(async () => "kind: Pod"),
@@ -151,7 +153,53 @@ const NOTHING_SELECTED = "Select a resource in the tree or graph to inspect it."
 
 beforeEach(() => {
   window.history.replaceState(null, "", "/");
+  state.snapshot = snapshot;
 });
+
+// Mirrors the reported case: a namespace with seven group-forming kinds, so its
+// children exceed WRAP_AT and get packed into a `__grid__` container. The card is
+// then a grid member rather than a top-level dagre node — a different code path
+// for both ranking and anchor resolution, and the one the bug was reported
+// against. 23 nodes keeps it under NODE_BUDGET.
+const GRID_NS = "core/namespace/flux-system";
+const GRID_ID = `__grid__${GRID_NS}`;
+const GRID_KINDS = [
+  "ConfigMap",
+  "Secret",
+  "Service",
+  "ServiceAccount",
+  "NetworkPolicy",
+  "Kustomization",
+  "GitRepository",
+];
+const GR_GROUP = `__kg__${GRID_NS}__GitRepository`;
+
+const griddedSnapshot: Snapshot = {
+  scope: { context: "kind-dev", namespaces: ["flux-system"] },
+  timestamp: "2026-08-11T09:00:00Z",
+  cluster: { context: "kind-dev", server: "https://x", version: "v1.33.0" },
+  nodes: [
+    { id: "cluster", kind: "Cluster", name: "kind-dev", health: "healthy", synthetic: true },
+    {
+      id: GRID_NS,
+      kind: "Namespace",
+      name: "flux-system",
+      parentId: "cluster",
+      health: "healthy",
+    },
+    ...GRID_KINDS.flatMap((kind) =>
+      [0, 1, 2].map((i) => ({
+        id: `${kind.toLowerCase()}/flux-system/${kind}-${i}`,
+        kind,
+        name: `${kind}-${i}`,
+        parentId: GRID_NS,
+        namespace: "flux-system",
+        health: "healthy" as const,
+      })),
+    ),
+  ],
+  edges: [],
+};
 
 describe("focus anchoring", () => {
   it("keeps a clicked resource at the same screen position while its subgraph is rebuilt", async () => {
@@ -276,5 +324,32 @@ describe("focus anchoring", () => {
     // Group cards aren't resources: expanding one must not hijack the details
     // panel or re-root the focus subgraph.
     expect(screen.getByText(NOTHING_SELECTED)).toBeInTheDocument();
+  });
+
+  it("ranks the members box below the grid when the card is packed into one", async () => {
+    // Seven group-forming kinds push the namespace past WRAP_AT, so the card is a
+    // grid member. Measured behaviour: the box hangs off the grid container, so it
+    // lands below the grid rather than directly beneath its own card — worth
+    // pinning, since this is the shape the bug was reported against and the anchor
+    // has to resolve the card through the grid's parentId chain.
+    state.snapshot = griddedSnapshot;
+    renderApp();
+    await waitFor(() => expect(nodeEl(GRID_ID)).toBeTruthy());
+    expect(nodeEl(GR_GROUP)).toBeTruthy(); // the card, packed inside the grid
+
+    fireEvent.click(nodeEl(GR_GROUP)!);
+    await waitFor(() => expect(nodeEl(`${GR_GROUP}__m`)).toBeTruthy());
+
+    // Clear of the grid's *bottom edge*, which is what distinguishes a rank below
+    // from a sibling on the same rank. Comparing bare `y` values would pass
+    // either way: dagre centres nodes within a rank, so a shorter box sits a few
+    // pixels lower than a taller grid even as its sibling.
+    const grid = nodeEl(GRID_ID)! as HTMLElement;
+    const gridBottom = translateOf(grid).y + parseFloat(grid.style.height);
+    expect(translateOf(nodeEl(`${GR_GROUP}__m`)!).y).toBeGreaterThanOrEqual(
+      gridBottom,
+    );
+    // The card survives the toggle and stays inside the grid.
+    expect(nodeEl(GR_GROUP)).toBeTruthy();
   });
 });
