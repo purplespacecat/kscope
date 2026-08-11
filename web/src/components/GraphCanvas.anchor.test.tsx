@@ -51,10 +51,30 @@ const DEP = "apps/deployment/web/api";
 const POD_GROUP = `__kg__${DEP}__Pod`;
 const pods = Array.from({ length: 6 }, (_, i) => `core/pod/web/api-6d4f${i}`);
 
-// namespace → deployment → 6 pods. Six same-kind leaves is past GROUP_AT, so the
-// pods fold into a collapsed kind-group card.
+// A SECOND namespace subtree is load-bearing, not scenery. With only one branch,
+// focusSubgraph returns a byte-identical node and edge set before and after DEP
+// is selected — the spine re-adds cluster and ns, then descends to the same
+// pods — so the layout never changes, the anchor delta is (0,0), and an
+// anchoring assertion would pass even with the feature deleted. Selecting DEP
+// prunes this sibling, which is what makes DEP actually move.
+const NS2 = "core/namespace/other";
+const DEP2 = "apps/deployment/other/worker";
+const pods2 = Array.from({ length: 6 }, (_, i) => `core/pod/other/worker-8a2b${i}`);
+
+const pod = (id: string, parentId: string, namespace: string) => ({
+  id,
+  kind: "Pod",
+  name: id.split("/").pop()!,
+  parentId,
+  namespace,
+  health: "healthy" as const,
+});
+
+// Each deployment holds 6 same-kind leaves — past GROUP_AT — so its pods fold
+// into a collapsed kind-group card. 17 nodes total stays under NODE_BUDGET (40),
+// so the unfocused view really does show both branches.
 const snapshot: Snapshot = {
-  scope: { context: "kind-dev", namespaces: ["web"] },
+  scope: { context: "kind-dev", namespaces: ["web", "other"] },
   timestamp: "2026-08-11T09:00:00Z",
   cluster: {
     context: "kind-dev",
@@ -65,17 +85,13 @@ const snapshot: Snapshot = {
     { id: "cluster", kind: "Cluster", name: "kind-dev", health: "healthy", synthetic: true },
     { id: NS, kind: "Namespace", name: "web", parentId: "cluster", health: "healthy" },
     { id: DEP, kind: "Deployment", name: "api", parentId: NS, namespace: "web", health: "healthy" },
-    ...pods.map((id) => ({
-      id,
-      kind: "Pod",
-      name: id.split("/").pop()!,
-      parentId: DEP,
-      namespace: "web",
-      health: "healthy" as const,
-    })),
+    ...pods.map((id) => pod(id, DEP, "web")),
+    { id: NS2, kind: "Namespace", name: "other", parentId: "cluster", health: "healthy" },
+    { id: DEP2, kind: "Deployment", name: "worker", parentId: NS2, namespace: "other", health: "healthy" },
+    ...pods2.map((id) => pod(id, DEP2, "other")),
   ],
   edges: [],
-  stats: { counts: { Pod: 6 }, durationMs: 1 },
+  stats: { counts: { Pod: 12 }, durationMs: 1 },
 };
 
 vi.mock("../api/client", () => ({
@@ -136,15 +152,19 @@ describe("focus anchoring", () => {
     renderApp();
     await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
 
-    const before = screenPos(DEP);
+    const beforeScreen = screenPos(DEP);
+    const beforeLayout = translateOf(nodeEl(DEP)!);
     fireEvent.click(nodeEl(DEP)!);
 
-    // Selecting rebuilds the focus subgraph around the deployment, moving it in
-    // layout space — but its screen position must not budge.
+    // Both halves matter. The layout assertion proves the reflow actually
+    // happened (otherwise the screen-position assertion is vacuous — it would
+    // hold even with anchoring removed); the screen assertion proves the pan
+    // compensated for it.
     await waitFor(() => {
-      const after = screenPos(DEP);
-      expect(after.x).toBeCloseTo(before.x, 1);
-      expect(after.y).toBeCloseTo(before.y, 1);
+      expect(translateOf(nodeEl(DEP)!)).not.toEqual(beforeLayout);
+      const afterScreen = screenPos(DEP);
+      expect(afterScreen.x).toBeCloseTo(beforeScreen.x, 1);
+      expect(afterScreen.y).toBeCloseTo(beforeScreen.y, 1);
     });
   });
 
@@ -160,6 +180,49 @@ describe("focus anchoring", () => {
     // Round-trip guards the toggle direction: it is read from the clicked card's
     // id, so a card that has just expanded must collapse rather than re-expand.
     fireEvent.click(nodeEl(`${POD_GROUP}__h`)!);
+    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeNull());
+    expect(nodeEl(pods[0])).toBeNull();
+  });
+
+  // The remount decision needs its own observable. fitView is a no-op under
+  // jsdom (nothing is measured), so "did the view re-frame?" can't distinguish
+  // the two paths — but DOM element identity can: changing the key unmounts the
+  // subtree, so every node element is rebuilt.
+  it("does not remount the canvas for a selection made in the canvas", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+
+    const before = nodeEl(DEP);
+    fireEvent.click(nodeEl(DEP)!);
+    await waitFor(() => expect(nodeEl(NS2)).toBeNull()); // subgraph did rebuild
+
+    expect(nodeEl(DEP)).toBe(before); // same element ⇒ no remount ⇒ no refit
+  });
+
+  it("remounts the canvas for a selection made in the tree", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+
+    const before = nodeEl(DEP);
+    const row = await waitFor(() => document.querySelector('[title="Namespace: web"]')!);
+    fireEvent.click(row);
+
+    // A tree click has no on-screen origin to preserve, so this path keeps the
+    // fit-the-new-subgraph behaviour, which is driven by the remount.
+    await waitFor(() => expect(nodeEl(DEP)).not.toBe(before));
+  });
+
+  it("collapses when the expanded group's container background is clicked", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+
+    fireEvent.click(nodeEl(POD_GROUP)!); // the collapsed card → expand
+    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeTruthy());
+
+    // Once expanded, the node carrying id POD_GROUP is the translucent container
+    // box, not the card — same id, opposite state. Its padding and the gaps
+    // between members are clickable, and clicking there must collapse the group.
+    fireEvent.click(nodeEl(POD_GROUP)!);
     await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeNull());
     expect(nodeEl(pods[0])).toBeNull();
   });

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   absolutePositions,
   anchoredViewport,
-  groupAnchorId,
-  groupWillExpand,
+  firstResolved,
+  groupAnchorIds,
   type Point,
   type ViewportRect,
 } from "./viewport";
@@ -56,29 +56,35 @@ describe("anchoredViewport", () => {
   });
 });
 
-describe("groupAnchorId", () => {
-  // Expanding a group card doesn't move it, it replaces it: the collapsed
-  // card `gid` becomes a container `gid` plus a header card `gid__h`.
-  // Anchoring on `gid` would latch onto the container's corner instead.
-  it("anchors on the expanded header when expanding", () => {
-    expect(groupAnchorId("__kg__ns/web__Pod", true)).toBe("__kg__ns/web__Pod__h");
-  });
-
-  it("anchors on the collapsed card when collapsing", () => {
-    expect(groupAnchorId("__kg__ns/web__Pod", false)).toBe("__kg__ns/web__Pod");
+describe("groupAnchorIds", () => {
+  // Toggling a group replaces nodes rather than moving them, and which id
+  // survives depends on the direction. Rather than predict the direction at
+  // click time — which misreads a click on the expanded container, whose id is
+  // also `gid` — both candidates are offered and whichever exists afterwards
+  // wins: expanded has `gid__h` (header) plus `gid` (container), collapsed has
+  // only `gid` (card).
+  it("prefers the header card over the bare group id", () => {
+    expect(groupAnchorIds("__kg__ns/web__Pod")).toEqual([
+      "__kg__ns/web__Pod__h",
+      "__kg__ns/web__Pod",
+    ]);
   });
 });
 
-describe("groupWillExpand", () => {
-  // Derived from the clicked card's own id rather than from the expandedGroups
-  // set: a fast double-click would otherwise read state from a render that
-  // hasn't caught up yet and expand twice instead of toggling back.
-  it("expands when the collapsed card itself was clicked", () => {
-    expect(groupWillExpand("__kg__ns/web__Pod", "__kg__ns/web__Pod")).toBe(true);
+describe("firstResolved", () => {
+  const abs = new Map<string, Point>([
+    ["a", { x: 1, y: 2 }],
+    ["b", { x: 3, y: 4 }],
+  ]);
+
+  it("takes the first candidate that exists", () => {
+    expect(firstResolved(abs, ["missing", "b", "a"])).toEqual({ x: 3, y: 4 });
   });
 
-  it("collapses when the expanded header was clicked", () => {
-    expect(groupWillExpand("__kg__ns/web__Pod__h", "__kg__ns/web__Pod")).toBe(false);
+  it("returns undefined when nothing resolves", () => {
+    // The caller leaves the viewport untouched in this case — failing to anchor
+    // beats panning to an arbitrary place.
+    expect(firstResolved(abs, ["missing", "gone"])).toBeUndefined();
   });
 });
 
@@ -105,6 +111,20 @@ describe("absolutePositions", () => {
       { id: "leaf", position: { x: 1, y: 2 }, parentId: "inner" },
     ]);
     expect(abs.get("leaf")).toEqual({ x: 111, y: 122 });
+  });
+
+  it("falls back to the raw position on a parent cycle instead of overflowing", () => {
+    // Unreachable from today's layout(), but the dangling-parent case is
+    // defended, and an unguarded chain walk would take the canvas down with a
+    // stack overflow rather than merely failing to anchor.
+    const abs = absolutePositions([
+      { id: "self", position: { x: 1, y: 1 }, parentId: "self" },
+      { id: "ping", position: { x: 2, y: 2 }, parentId: "pong" },
+      { id: "pong", position: { x: 3, y: 3 }, parentId: "ping" },
+    ]);
+    expect(abs.get("self")).toEqual({ x: 1, y: 1 });
+    expect(abs.get("ping")).toBeDefined();
+    expect(abs.get("pong")).toBeDefined();
   });
 
   it("falls back to the raw position when the parent is missing", () => {

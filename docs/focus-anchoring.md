@@ -83,25 +83,32 @@ return value, which would have threaded container origins through `layout()`'s
 internals. A dangling `parentId` falls back to the raw position: failing to
 anchor beats NaN coordinates, which would corrupt the viewport instead.
 
-### 4.3 Successor rule
+### 4.3 Candidate ids, not a predicted successor
 
-Expanding a group swaps node identity, so the anchor id is not always the
-clicked id:
+Toggling a group replaces nodes rather than moving them, so the anchor id is not
+the clicked id. There are **three** clickable ids per kind-group, not two:
 
-| Clicked | Anchor id |
-| --- | --- |
-| collapsed group card `gid` | `${gid}__h` (expanded header) |
-| expanded header `${gid}__h` | `gid` (collapsed card) |
-| resource node | unchanged — ids are stable |
+| Node | id | State |
+| --- | --- | --- |
+| collapsed card | `gid` | collapsed |
+| expanded header card | `${gid}__h` | expanded |
+| expanded container box | `gid` | expanded |
 
-Anchoring a group card on `gid` alone would latch onto the *container's*
-top-left corner, so the card would visibly shift by the container padding.
+The container and the collapsed card **share an id** while being in opposite
+states, so no rule based on the clicked id alone can tell them apart. An earlier
+design predicted the toggle direction from id equality and consequently broke
+collapse-by-clicking-the-box, and mis-anchored by the container padding.
 
-Which direction the toggle goes is read from the clicked card's own id
-(`groupWillExpand`): a collapsed card's id *is* `gid`, an expanded header's is
-`gid__h`. Deriving it from the `expandedGroups` set instead would let a rapid
-second click act on a render that hasn't caught up and expand twice rather than
-toggling back.
+Two consequences:
+
+- **Direction** comes from the `expandedGroups` set inside the functional
+  updater (`prev.has(gid) ? delete : add`), which reflects actual membership and
+  cannot be fooled by a shared id.
+- **The anchor doesn't need the direction at all.** `groupAnchorIds(gid)` offers
+  both candidates, best first — `[`${gid}__h`, `gid`]` — and whichever exists
+  after the reflow wins. Expanded has the header (preferred over the container's
+  corner); collapsed has only the card. Resource nodes need no mapping; their ids
+  are stable.
 
 ### 4.4 Viewport math
 
@@ -122,10 +129,13 @@ The effect lives in a small child component inside `<ReactFlow>`, since
 `useReactFlow()` requires that context — the same reason `RecenterButton` is a
 child rather than inline in `GraphCanvas`.
 
-If the anchor id cannot be resolved after the reflow, the effect is a no-op and
-the anchor clears: the viewport stays put rather than jumping somewhere
-arbitrary. The successor rule should make this unreachable; it is a safe
-failure, not an expected path.
+If no candidate id resolves after the reflow, the effect is a no-op and the
+anchor clears: the viewport stays put rather than jumping somewhere arbitrary.
+
+The pan is **relative** — it reads the current viewport and applies a delta — so
+applying one anchor twice doubles the correction. StrictMode double-invokes mount
+effects, so the effect guards on anchor identity (a ref holding the last applied
+anchor) rather than trusting the dependency array to fire exactly once.
 
 ### 4.5 Anchored vs refit
 
@@ -136,16 +146,26 @@ already uses for tooltip dismissal:
 ```ts
 if (selectedId !== seenSelectedId) {
   setSeenSelectedId(selectedId);
-  if (!anchor) setViewKey((k) => k + 1);   // arrived from outside → refit
+  // Anchor only for the selection it was captured for
+  if (!anchor || anchor.forSelection !== selectedId) {
+    setViewKey((k) => k + 1);
+    if (anchor) setAnchor(null);           // never carry a stale anchor into a refit
+  }
   if (tip) setTip(null);
 }
 ```
 
 | Path | anchor | viewKey | Result |
 | --- | --- | --- | --- |
-| Canvas click, resource | set | unchanged | no remount, anchored |
+| Canvas click, resource | set, matching | unchanged | no remount, anchored |
 | Canvas click, group card | set | unchanged | `selectedId` never changes; anchored |
-| Tree / details / k9s / `?focus=` | null | bumped | remount + `fitView`, as today |
+| Tree / details / k9s / `?focus=` | absent or mismatched | bumped | remount + `fitView`, as today |
+
+Matching on `forSelection` rather than mere anchor *presence* matters because the
+anchor lives from the click until the effect runs. The k9s handoff arrives as an
+IPC callback rather than a discrete React event, so it can land inside that
+window; presence alone would misread it as the click's own and suppress a refit
+that should happen.
 
 ## 5. Knock-on: `RecenterButton`'s home viewport
 
@@ -155,8 +175,16 @@ outlive the subgraph it was measured against: `recenter()` calls `fitView()`,
 lands on a viewport that does not match the stale `home`, and the button never
 hides again.
 
-Fix: recapture `home` once the recenter animation settles. This regression is
-introduced by removing the guaranteed remount, so it is in scope here.
+Fix: a `recentering` ref is set before `fitView`, and the resulting move-end
+*adopts* that viewport as the new home instead of comparing against the stale
+one. This regression is introduced by removing the guaranteed remount, so it is
+in scope here.
+
+`fitView` returns `Promise<boolean>` and schedules no transition when there is
+nothing fittable — reachable via `Ctrl-0` or the View menu before discovery has
+run. No transition means no move-end will ever arrive to clear the flag, and the
+user's next pan would then be adopted as home, hiding the button when it should
+be showing. So the flag is also cleared when the promise reports `false`.
 
 ## 6. Non-goals
 
@@ -174,20 +202,43 @@ introduced by removing the guaranteed remount, so it is in scope here.
 
 - the compensation math of §4.4, asserted as the screen-position invariant
   rather than bare arithmetic, and at a non-1.0 zoom;
-- the successor mapping and toggle direction of §4.3, both ways;
-- `absolutePositions` for a nested container, a dangling `parentId`, and
-  top-level passthrough.
+- the candidate-id ordering of §4.3, and the resolver's miss case;
+- `absolutePositions` for a nested container, a dangling `parentId`, a parent
+  cycle, and top-level passthrough.
 
 **Component** — `web/src/components/GraphCanvas.anchor.test.tsx` renders the real
 `App` with the real canvas (only `api/client` is mocked) and reads screen
 positions straight off the DOM transforms:
 
-- a clicked resource holds its screen position while its subgraph is rebuilt —
-  this covers the `viewKey` decision and the batched anchor/selection update,
-  the riskiest part of the design;
-- a group card expands and collapses again, guarding the §4.3 toggle direction
-  at DOM level;
+- a clicked resource holds its screen position **while its layout position
+  changes** — both halves are asserted, because without the layout half the test
+  is vacuous (see below);
+- the canvas is *not* remounted for a canvas-originated selection, and *is* for a
+  tree-originated one — asserted via DOM element identity, since a key change
+  rebuilds every node element;
+- a group card expands and collapses again, and collapses when the expanded
+  **container background** is clicked (the §4.3 shared-id case);
 - toggling a group card leaves the selection untouched (§6).
+
+**Two traps this suite had to be built around**, both of which produced
+confidently-passing tests that verified nothing:
+
+1. *Fixture shape.* With a single namespace branch, `focusSubgraph` returns a
+   byte-identical node and edge set before and after a deployment is selected —
+   the spine re-adds the ancestors and descends to the same pods — so the layout
+   never changes, the anchor delta is `(0,0)`, and a screen-position assertion
+   holds even with anchoring deleted. The fixture therefore carries a **second
+   namespace subtree** that selection prunes, and the test asserts the layout
+   position genuinely moved.
+2. *No observable for the remount.* `fitView` is a no-op under jsdom, so
+   "did the view re-frame?" cannot distinguish anchored from refit — reverting
+   `key={viewKey}` to `key={selectedId}` left every geometry assertion passing.
+   DOM element identity is the observable that does discriminate, and it was
+   verified to fail against the reverted implementation.
+
+Use `fireEvent`, not `user-event`: a full pointer sequence reaches d3-zoom's
+mousedown handler, which dereferences `event.view` — null on jsdom-dispatched
+events — and crashes the test.
 
 **Known limit.** Nodes inside a group container (`extent: "parent"`) cannot have
 their geometry asserted under jsdom: xyflow measures the container as 0x0 and
@@ -207,7 +258,7 @@ mount is unchanged by this work.
 
 | File | Change |
 | --- | --- |
-| `web/src/lib/viewport.ts` | new — pure compensation math + successor mapping |
+| `web/src/lib/viewport.ts` | new — pure compensation math, candidate-id helpers, absolute positions |
 | `web/src/lib/viewport.test.ts` | new — unit tests for the above |
 | `web/src/components/GraphCanvas.anchor.test.tsx` | new — DOM-level anchoring/toggle tests, with the jsdom stubs xyflow needs |
 | `web/src/components/GraphCanvas.tsx` | anchor state, `AnchorKeeper` child inside `<ReactFlow>`, `viewKey` replacing the `selectedId` remount key, `HEADER_SUFFIX` shared with `layout()`, `RecenterButton` home recapture |

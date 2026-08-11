@@ -30,8 +30,8 @@ import {
   HEADER_SUFFIX,
   absolutePositions,
   anchoredViewport,
-  groupAnchorId,
-  groupWillExpand,
+  firstResolved,
+  groupAnchorIds,
   type Point,
 } from "../lib/viewport";
 
@@ -500,11 +500,13 @@ function layout(
 // (Needs the ReactFlow context, hence a child component inside <ReactFlow>.)
 //
 // Only rendered once the view has actually left the fitted "home" position:
-// the fitted viewport is captured just after mount, every pan/zoom end is
-// compared against it, and clicking Re-center animates back to home — whose
-// own move-end then compares equal and hides the button again. The component
-// itself stays mounted so the desktop-menu subscription survives while the
-// button is hidden.
+// the fitted viewport is captured just after mount, and every pan/zoom end is
+// compared against it. Clicking Re-center re-fits and *adopts* the landing
+// viewport as the new home — necessary because anchored selections change the
+// graph's contents without remounting, which would otherwise leave `home`
+// describing a subgraph that no longer exists and the button stuck visible. The
+// component itself stays mounted so the desktop-menu subscription survives
+// while the button is hidden.
 function RecenterButton() {
   const { fitView, getViewport } = useReactFlow();
   const [moved, setMoved] = useState(false);
@@ -550,9 +552,14 @@ function RecenterButton() {
     },
   });
 
-  const recenter = useCallback(() => {
+  const recenter = useCallback(async () => {
     recentering.current = true;
-    return fitView({ padding: 0.1, duration: 300 });
+    // fitView schedules no transition when there is nothing fittable — reachable
+    // via Ctrl-0 or the View menu before discovery has run — and then no
+    // move-end ever arrives to clear the flag, so the user's next pan would be
+    // adopted as the new home.
+    const fitted = await fitView({ padding: 0.1, duration: 300 });
+    if (!fitted) recentering.current = false;
   }, [fitView]);
 
   // The desktop View menu drives the same action. Subscribing here rather than
@@ -579,9 +586,16 @@ function RecenterButton() {
 
 /** The node to keep put across a reflow, and where it sat before it. */
 interface Anchor {
-  /** Id to look for *after* the reflow — see groupAnchorId for group cards. */
-  id: string;
+  /** Ids to look for *after* the reflow, best first — see groupAnchorIds. */
+  ids: string[];
+  /** The clicked node's absolute position *before* the reflow. */
   pos: Point;
+  /**
+   * The selection this anchor was captured for. A selection change that doesn't
+   * match it came from somewhere else (k9s handoff, tree, ?focus=) and must
+   * refit rather than anchor.
+   */
+  forSelection: string | null;
 }
 
 // Pans the viewport so the anchored node keeps its screen position once the new
@@ -598,11 +612,17 @@ function AnchorKeeper({
   onApplied: () => void;
 }) {
   const { getViewport, setViewport } = useReactFlow();
+  // The pan is relative — it reads the current viewport and applies a delta — so
+  // applying the same anchor twice doubles the correction. StrictMode
+  // double-invokes mount effects, so guard on identity rather than trusting the
+  // dependency array to fire exactly once.
+  const applied = useRef<Anchor | null>(null);
   useEffect(() => {
-    if (!anchor) return;
-    const next = absPos.get(anchor.id);
+    if (!anchor || applied.current === anchor) return;
+    applied.current = anchor;
+    const next = firstResolved(absPos, anchor.ids);
     // Unresolvable anchor: leave the viewport alone rather than jump somewhere
-    // arbitrary. The successor rule should make this unreachable.
+    // arbitrary.
     if (next) setViewport(anchoredViewport(anchor.pos, next, getViewport()));
     onApplied();
   }, [anchor, absPos, getViewport, setViewport, onApplied]);
@@ -657,19 +677,25 @@ export function GraphCanvas({
   };
   useEffect(() => clearTip, []); // clear pending timer on unmount
 
-  // Any view change must dismiss the tooltip immediately. A selection change
-  // remounts <ReactFlow> (keyed on selectedId), which destroys the node the
-  // mouse was over — so its onNodeMouseLeave never fires and the tooltip
-  // would linger over the new view. This also covers selections made outside
-  // the canvas (tree panel, k9s focus handoff). Render-time adjustment
-  // instead of an effect, same pattern as ScopePanel.
+  // Any view change must dismiss the tooltip immediately. A selection from
+  // outside the canvas remounts <ReactFlow> (keyed on viewKey), which destroys
+  // the node the mouse was over — so its onNodeMouseLeave never fires and the
+  // tooltip would linger over the new view. Anchored selections don't remount,
+  // but the layout still shifts under the tooltip, so both cases dismiss it.
+  // Render-time adjustment instead of an effect, same pattern as ScopePanel.
   const [seenSelectedId, setSeenSelectedId] = useState(selectedId);
   if (selectedId !== seenSelectedId) {
     setSeenSelectedId(selectedId);
-    // No anchor pending means the selection came from outside the canvas, so
-    // refit. A canvas click sets the anchor in the same batched update, so it
-    // is already visible here and the viewport is left for AnchorKeeper.
-    if (!anchor) setViewKey((k) => k + 1);
+    // Anchor only when this exact selection is the one the anchor was captured
+    // for. Anchor *presence* alone isn't enough: it lives until AnchorKeeper's
+    // effect runs, and an out-of-band selection (the k9s handoff is an IPC
+    // callback, not a discrete React event) could land in that window and be
+    // mistaken for the click's own. A stale anchor is dropped so the remount
+    // can't pan on top of fitView.
+    if (!anchor || anchor.forSelection !== selectedId) {
+      setViewKey((k) => k + 1);
+      if (anchor) setAnchor(null);
+    }
     if (tip) setTip(null);
   }
   // The dwell timer needs the same treatment: a timer scheduled in the old
@@ -745,13 +771,18 @@ export function GraphCanvas({
           const here = absPos.get(n.id) ?? null;
           if (d.groupToggle) {
             const gid = d.groupToggle;
-            const willExpand = groupWillExpand(n.id, gid);
-            // Expanding swaps the card's identity, so anchor on its successor.
-            if (here) setAnchor({ id: groupAnchorId(gid, willExpand), pos: here });
+            // Direction comes from the set itself, never from the clicked id:
+            // an expanded group's *container* shares the collapsed card's id, so
+            // id equality misreads a click on the box background as "expand" and
+            // the group would never collapse. The anchor doesn't need the
+            // direction either — it offers both candidate ids.
+            if (here) {
+              setAnchor({ ids: groupAnchorIds(gid), pos: here, forSelection: selectedId });
+            }
             setExpandedGroups((prev) => {
               const next = new Set(prev);
-              if (willExpand) next.add(gid);
-              else next.delete(gid);
+              if (next.has(gid)) next.delete(gid);
+              else next.add(gid);
               return next;
             });
             return;
@@ -759,7 +790,7 @@ export function GraphCanvas({
           if (d.raw) {
             // Resource ids are stable across the reflow, so the node itself is
             // the anchor. Batched with the selection change below.
-            if (here) setAnchor({ id: d.raw.id, pos: here });
+            if (here) setAnchor({ ids: [d.raw.id], pos: here, forSelection: d.raw.id });
             onSelect(d.raw);
           }
         }}
