@@ -163,15 +163,23 @@ export function ScopePanel({ snapshot, onCollapse }: Props) {
         >
           <span>Namespaces</span>
           <span className="shrink-0 text-xs text-slate-500">
-            {nsLoading ? "loading…" : `${selected.size} of ${available?.length ?? 0}`}
+            {nsLoading
+              ? "loading…"
+              : // "of 0" would be a lie while the list is unavailable.
+                available
+                ? `${selected.size} of ${available.length}`
+                : `${selected.size} selected`}
           </span>
         </button>
-        {nsError ? (
+        {/* Kept visible even when the fetch failed: the summary is the only place
+            the committed scope is shown, and hiding it while the trigger is
+            disabled would leave no way to see what the next run would cover.
+            Truncated rather than wrapped so the section's height stays fixed. */}
+        <p className="mt-1 truncate text-[10px] text-slate-400" title={summary}>
+          {summary}
+        </p>
+        {nsError && (
           <p className="mt-1 text-xs text-red-600">Failed to load namespaces</p>
-        ) : (
-          <p className="mt-1 break-words text-[10px] text-slate-400" title={summary}>
-            {summary}
-          </p>
         )}
       </div>
 

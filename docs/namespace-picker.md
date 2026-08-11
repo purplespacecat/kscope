@@ -37,9 +37,12 @@ from the very list it filters.
 The filter input and the checkbox list move into the modal. In their place: a
 trigger button and a bounded, read-only summary of the current selection.
 
-The trigger reads `Namespaces · 4 of 24` and opens the modal. Beneath it, the
-summary lists the first **three** selected names plus `+N more`, or
-`None selected` when empty.
+The trigger is a full-width button with `Namespaces` at one end and `4 of 24` at
+the other. Beneath it, the summary lists the first **three** selected names plus
+`+N more`, or `None selected` when empty, truncated to one line so the section's
+height stays fixed. The summary stays visible even when the namespace fetch
+fails — it is the only place the committed scope is shown, and hiding it while
+the trigger is disabled would leave no way to see what the next run covers.
 
 The summary is **not** decoration. Today the sidebar lists every namespace with
 its checkbox, so the scope is visible at a glance; a modal hides that. Capping it
@@ -50,9 +53,18 @@ needed, so the resource tree below gains space.
 
 ## 5. Modal mechanics
 
-- `position: fixed inset-0` with a backdrop at `z-50`; App's own overlays sit at
-  `z-20`. No portal: nothing in the sidebar's ancestry creates a containing
-  block, so `fixed` escapes the sidebar's overflow on its own.
+- A native `<dialog>` opened with `showModal()`, which supplies the focus trap,
+  the `::backdrop`, and **top-layer** stacking. The last one matters: an earlier
+  `position: fixed` + `z-50` version collided with the graph's hover tooltip,
+  which is *also* `z-50`. Neither element's ancestors create a stacking context,
+  so both competed in the root context and the tooltip won on tree order —
+  `<aside>` precedes `<main>`. The top layer sits above all of it.
+- **jsdom implements neither `showModal` nor the top layer**, so tests fall back
+  to setting the `open` attribute: enough to render and query the dialog, not
+  enough to exercise the trap or the stacking. Those are browser-verified only.
+- Focus is captured before the dialog opens and restored on unmount. The
+  browser's own restore only runs on `close()`, and this component is unmounted
+  instead.
 - Namespaces in a grid: 2 columns by default, 3 at `sm`, 4 at `lg`, with a
   `max-height` and overflow as a safety valve — a 200-namespace cluster degrades
   to scrolling rather than overflowing the screen. "No scrolling" is the goal for
@@ -72,6 +84,14 @@ receives it as a prop, copies it into a **draft** on open, mutates only the
 draft, and returns it on `Done`. That is what makes `Cancel` work, and it keeps
 the modal a pure `(available, selected) → selected` component with no shared
 mutable state.
+
+Seeding once is not enough on its own. `ScopePanel` re-hydrates `selected` from
+every arriving snapshot, and one can land while the modal is open — `available`
+and the snapshot are independent fetches, so opening in the window between them
+would seed an empty draft that a plain `Done` then commits over the real scope.
+So a newer `selected` is **adopted while the draft is untouched**, and ignored
+once the user has edited it: their work wins over a late arrival, and an unedited
+draft never clobbers fresher state.
 
 `filter` becomes modal-local and resets on each open, which also removes the
 `setFilter("")` line from `onContextChange`.
@@ -95,6 +115,16 @@ that moment. A namespace created afterwards is not included until select-all is
 used again. Keeping it explicit — rather than adding an "all namespaces" flag —
 also keeps invocations parameterised rather than implicit.
 
+**Names not on the cluster are dropped.** The draft is seeded from
+`available ∩ selected` and intersected again on commit. A saved scope can name a
+deleted namespace: `discover.go` filters unknown names out of discovery but
+echoes the *requested* scope back into the snapshot, so the name re-hydrates on
+every load. It has no row here, so neither its own checkbox nor select-all could
+ever clear it, and the counts read "3 of 2". Dropping it on the way in and out
+makes the counts honest and the scope editable. This also covers a context switch
+underneath an open modal, where the draft would otherwise still hold the previous
+cluster's names.
+
 ## 8. Non-goals
 
 - No change to `Scope`, the discovery API, or anything server-side.
@@ -116,7 +146,14 @@ today; the picker gets its own, driven through props:
   for;
 - the checkbox is indeterminate when only some visible rows are selected;
 - `Cancel` discards a draft change; `Done` commits it;
-- Esc closes and discards.
+- Esc closes and discards;
+- a namespace in `selected` but absent from `available` is dropped rather than
+  committed;
+- a newer `selected` arriving mid-open is adopted while the draft is untouched,
+  and ignored once it has been edited (both directions asserted).
+
+**Not covered:** the focus trap, `::backdrop` and top-layer stacking, because
+jsdom implements neither `showModal` nor the top layer. Those are browser-only.
 
 ## 10. Files touched
 
@@ -125,3 +162,5 @@ today; the picker gets its own, driven through props:
 | `web/src/components/NamespacePicker.tsx` | new — the modal: filter, tri-state select-all, grid of namespaces, Done/Cancel |
 | `web/src/components/NamespacePicker.test.tsx` | new — the behaviours in §9 |
 | `web/src/components/ScopePanel.tsx` | filter input, filter state and checkbox list removed (including the `setFilter("")` in `onContextChange`); trigger button + selection summary added; `max-h-[45%]` cap dropped |
+| `web/src/App.test.tsx` | an integration test for the trigger → `Done` → Run discovery wiring, which the picker's own tests can't see; mock namespace list widened so the count can change |
+| `README.md` | Quickstart step 2 rewritten for the dialog |

@@ -8,30 +8,61 @@ interface Props {
   onCancel: () => void;
 }
 
+/**
+ * The selection narrowed to namespaces that actually exist on the cluster.
+ *
+ * A saved scope can name a namespace that has since been deleted: the server
+ * filters unknown names out of discovery but echoes the *requested* scope back
+ * into the snapshot, so the name re-hydrates on every load. Such a name has no
+ * row here, which means no control — not its checkbox, not select-all — could
+ * ever clear it. Dropping it on the way in and out is what makes the counts
+ * honest and the scope editable.
+ */
+const onCluster = (available: string[], selected: Set<string>) =>
+  new Set(available.filter((n) => selected.has(n)));
+
 // Modal namespace picker. Mounting it *is* opening it — ScopePanel renders it
-// conditionally — so the draft can be seeded from props on mount and needs no
+// conditionally — so the draft is seeded from props on mount and there is no
 // open/close prop. See docs/namespace-picker.md.
 export function NamespacePicker({ available, selected, onDone, onCancel }: Props) {
-  const [draft, setDraft] = useState<Set<string>>(() => new Set(selected));
+  const [draft, setDraft] = useState(() => onCluster(available, selected));
+  const [edited, setEdited] = useState(false);
   const [filter, setFilter] = useState("");
 
-  const visible = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return available.filter((n) => !q || n.toLowerCase().includes(q));
-  }, [available, filter]);
+  // ScopePanel re-hydrates `selected` from every arriving snapshot, and one can
+  // land while this is open — `available` and the snapshot are independent
+  // fetches, so opening in the window between them would otherwise seed an empty
+  // draft that a plain Done would commit over the real scope. Adopt a newer
+  // selection only while the draft is untouched; after that the user's edits win.
+  const [seenSelected, setSeenSelected] = useState(selected);
+  if (selected !== seenSelected) {
+    setSeenSelected(selected);
+    if (!edited) setDraft(onCluster(available, selected));
+  }
 
-  const selectedVisible = visible.filter((n) => draft.has(n)).length;
-  const allVisible = visible.length > 0 && selectedVisible === visible.length;
-  const someVisible = selectedVisible > 0 && !allVisible;
-
-  // Checkboxes have no `indeterminate` prop — it's a DOM-only property.
-  const allRef = useRef<HTMLInputElement>(null);
+  // Declared before the effect that opens the dialog: effects run in order, so
+  // this captures the trigger *before* focus moves inside. Unmounting the dialog
+  // skips the browser's own focus restore, which only runs on close().
   useEffect(() => {
-    if (allRef.current) allRef.current.indeterminate = someVisible;
-  }, [someVisible]);
+    const opener = document.activeElement as HTMLElement | null;
+    return () => opener?.focus?.();
+  }, []);
 
-  // Esc discards, matching the backdrop and Cancel. Bound to the document so it
-  // works wherever focus happens to be inside the dialog.
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    // showModal() brings the focus trap, ::backdrop and top-layer stacking with
+    // it — the last of which matters because the graph's hover tooltip is also
+    // z-50 and would otherwise paint over this on tree order. jsdom implements
+    // none of that, so tests fall back to the `open` attribute: enough to render
+    // and query, not enough to exercise the trap.
+    if (dialog?.showModal) dialog.showModal();
+    else dialog?.setAttribute("open", "");
+  }, []);
+
+  // Escape is handled here rather than left to the dialog's own `cancel` event so
+  // it behaves identically under jsdom. Both paths funnel into onCancel, which is
+  // idempotent.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
@@ -40,7 +71,22 @@ export function NamespacePicker({ available, selected, onDone, onCancel }: Props
     return () => document.removeEventListener("keydown", onKey);
   }, [onCancel]);
 
+  const visible = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return available.filter((n) => !q || n.toLowerCase().includes(q));
+  }, [available, filter]);
+
+  const allVisible = visible.length > 0 && visible.every((n) => draft.has(n));
+  const someVisible = !allVisible && visible.some((n) => draft.has(n));
+
+  // Checkboxes have no `indeterminate` prop — it's a DOM-only property.
+  const allRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (allRef.current) allRef.current.indeterminate = someVisible;
+  }, [someVisible]);
+
   const toggle = (ns: string) => {
+    setEdited(true);
     setDraft((prev) => {
       const next = new Set(prev);
       if (next.has(ns)) next.delete(ns);
@@ -52,6 +98,7 @@ export function NamespacePicker({ available, selected, onDone, onCancel }: Props
   // Acts on the filtered rows only: selections hidden by the filter are never
   // touched, so you can narrow, take a batch, narrow again and add more.
   const toggleVisible = () => {
+    setEdited(true);
     setDraft((prev) => {
       const next = new Set(prev);
       if (allVisible) for (const n of visible) next.delete(n);
@@ -63,20 +110,21 @@ export function NamespacePicker({ available, selected, onDone, onCancel }: Props
   const filtering = filter.trim().length > 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop: clicking it discards, like Cancel. */}
-      <button
-        type="button"
-        aria-label="Close"
-        onClick={onCancel}
-        className="absolute inset-0 cursor-default bg-slate-900/40"
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="ns-picker-title"
-        className="relative flex max-h-[80vh] w-full max-w-3xl flex-col rounded-lg bg-white shadow-xl"
-      >
+    <dialog
+      ref={dialogRef}
+      aria-labelledby="ns-picker-title"
+      // A click landing on the dialog itself is a click on the backdrop, since
+      // all content sits in the padded child below.
+      onClick={(e) => {
+        if (e.target === dialogRef.current) onCancel();
+      }}
+      onCancel={(e) => {
+        e.preventDefault(); // React owns open/closed; don't let the UA close it
+        onCancel();
+      }}
+      className="m-auto max-h-[80vh] w-full max-w-3xl rounded-lg bg-white p-0 text-slate-900 shadow-xl backdrop:bg-slate-900/40"
+    >
+      <div className="flex max-h-[80vh] flex-col">
         <div className="flex items-start justify-between border-b border-slate-200 px-4 py-3">
           <div>
             <h2
@@ -93,6 +141,7 @@ export function NamespacePicker({ available, selected, onDone, onCancel }: Props
             type="button"
             onClick={onCancel}
             aria-label="Close namespace picker"
+            title="Close"
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-700"
           >
             ✕
@@ -123,9 +172,9 @@ export function NamespacePicker({ available, selected, onDone, onCancel }: Props
           </label>
         </div>
 
-        {/* Columns are what remove the scrolling; max-height keeps a 200-namespace
-            cluster from overflowing the screen rather than promising it never
-            scrolls. */}
+        {/* Columns are what remove the scrolling; max-height keeps a
+            200-namespace cluster from overflowing the screen rather than
+            promising it never scrolls. */}
         <div className="grid flex-1 grid-cols-2 gap-x-4 overflow-y-auto px-4 py-3 sm:grid-cols-3 lg:grid-cols-4">
           {visible.map((ns) => (
             <label
@@ -160,13 +209,13 @@ export function NamespacePicker({ available, selected, onDone, onCancel }: Props
               Run discovery keeps its own guard against an empty run. */}
           <button
             type="button"
-            onClick={() => onDone(draft)}
+            onClick={() => onDone(onCluster(available, draft))}
             className="rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white"
           >
             Done ({draft.size})
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

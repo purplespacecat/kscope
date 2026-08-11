@@ -107,8 +107,8 @@ describe("sidebar collapsing", () => {
     renderApp();
 
     // Select the namespace in the tree → details replace the overview.
-    // Queried by the row's title attribute: ScopePanel's namespace checkbox
-    // also renders the text "web", so plain text would be ambiguous.
+    // Queried by the row's title attribute: ScopePanel's selection summary also
+    // renders the text "web", so plain text would be ambiguous.
     await user.click(await screen.findByTitle("Namespace: web"));
     expect(await screen.findByText("Health")).toBeInTheDocument();
 

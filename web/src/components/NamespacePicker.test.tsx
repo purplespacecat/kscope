@@ -11,18 +11,28 @@ const NAMESPACES = [
   "monitoring",
 ];
 
-function open(selected: string[] = []) {
+function open(selected: string[] = [], available: string[] = NAMESPACES) {
   const onDone = vi.fn();
   const onCancel = vi.fn();
-  render(
+  const view = render(
     <NamespacePicker
-      available={NAMESPACES}
+      available={available}
       selected={new Set(selected)}
       onDone={onDone}
       onCancel={onCancel}
     />,
   );
-  return { onDone, onCancel, user: userEvent.setup() };
+  /** Re-render with new props, as ScopePanel does when a snapshot lands. */
+  const update = (next: { selected?: string[]; available?: string[] }) =>
+    view.rerender(
+      <NamespacePicker
+        available={next.available ?? available}
+        selected={new Set(next.selected ?? selected)}
+        onDone={onDone}
+        onCancel={onCancel}
+      />,
+    );
+  return { onDone, onCancel, update, user: userEvent.setup() };
 }
 
 /** What onDone received, order-insensitive. */
@@ -110,6 +120,43 @@ describe("NamespacePicker", () => {
 
     expect(onCancel).toHaveBeenCalled();
     expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("drops namespaces that no longer exist on the cluster", async () => {
+    // A saved scope can name a namespace that has since been deleted. It gets no
+    // row, so select-all can't reach it and nothing else can either — and the
+    // server echoes the requested scope back into every snapshot, so it would
+    // re-hydrate forever.
+    const { onDone, user } = open(["monitoring", "deleted-last-week"]);
+
+    expect(screen.getByText("1 of 5 selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /done/i }));
+    expect(committed(onDone)).toEqual(["monitoring"]);
+  });
+
+  it("adopts a newer selection that arrives before the user edits anything", async () => {
+    // available and the snapshot are independent fetches: open the picker in the
+    // window between them and the draft would be seeded empty, so a plain Done
+    // would wipe the scope the snapshot then hydrated.
+    const { onDone, update, user } = open([]);
+
+    update({ selected: ["kube-system", "monitoring"] });
+    await user.click(screen.getByRole("button", { name: /done/i }));
+
+    expect(committed(onDone)).toEqual(["kube-system", "monitoring"]);
+  });
+
+  it("keeps in-progress edits when a newer selection arrives", async () => {
+    // The flip side: once the user has touched the draft, their work wins over a
+    // late-arriving snapshot rather than being silently replaced.
+    const { onDone, update, user } = open([]);
+
+    await user.click(row("default"));
+    update({ selected: ["kube-system", "monitoring"] });
+    await user.click(screen.getByRole("button", { name: /done/i }));
+
+    expect(committed(onDone)).toEqual(["default"]);
   });
 
   it("commits an empty selection, since clearing the scope is a valid edit", async () => {
