@@ -2,6 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useContexts, useNamespaces, useRefresh } from "../hooks/useGraph";
 import { DESKTOP_EVENTS, onDesktopEvent } from "../lib/desktop";
 import type { Snapshot } from "../types/graph";
+import { NamespacePicker } from "./NamespacePicker";
+
+// How many selected names the sidebar summary spells out before collapsing the
+// rest into "+N more" — enough to recognise the scope, few enough that a
+// select-all can't make the section tall.
+const SUMMARY_NAMES = 3;
 
 interface Props {
   snapshot: Snapshot | null | undefined;
@@ -27,7 +33,9 @@ export function ScopePanel({ snapshot, onCollapse }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [includeInfra, setIncludeInfra] = useState(true);
   const [includeCRDs, setIncludeCRDs] = useState(true);
-  const [filter, setFilter] = useState("");
+  // The namespace list and its filter live in a modal — the sidebar is too
+  // narrow to show a real cluster's namespaces without scrolling a short window.
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   // Re-hydrate selection from the server snapshot every time a new one lands
   // — this is what makes "refresh the browser and keep the same view" work.
@@ -49,22 +57,17 @@ export function ScopePanel({ snapshot, onCollapse }: Props) {
   const onContextChange = (next: string) => {
     setKubeContext(next);
     setSelected(new Set());
-    setFilter("");
   };
 
-  const visible = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return (available ?? []).filter((n) => !q || n.toLowerCase().includes(q));
-  }, [available, filter]);
-
-  const toggle = (ns: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(ns)) next.delete(ns);
-      else next.add(ns);
-      return next;
-    });
-  };
+  // Keeps the chosen scope readable without opening the modal — the inline list
+  // used to show it, so this replaces information rather than adding it.
+  const summary = useMemo(() => {
+    const names = [...selected].sort();
+    if (names.length === 0) return "None selected";
+    const shown = names.slice(0, SUMMARY_NAMES).join(", ");
+    const rest = names.length - SUMMARY_NAMES;
+    return rest > 0 ? `${shown} +${rest} more` : shown;
+  }, [selected]);
 
   const canRun = selected.size > 0 && !refresh.isPending;
 
@@ -81,7 +84,7 @@ export function ScopePanel({ snapshot, onCollapse }: Props) {
   // Desktop File → Run discovery (Ctrl-R) does exactly what the button does,
   // with the same guard so the shortcut can't fire an empty or concurrent run.
   // The handler lives in a ref so the subscription is created once instead of
-  // being torn down and rebuilt on every keystroke in the filter box.
+  // being torn down and rebuilt whenever the scope changes.
   const runRef = useRef(() => {});
   // No dep array: refresh the stored closure after every render so it always
   // sees current state. Writing it during render is what the refs lint rule
@@ -96,10 +99,11 @@ export function ScopePanel({ snapshot, onCollapse }: Props) {
     [],
   );
 
-  // Rendered as the top section of the left sidebar (App owns the column);
-  // capped height so the resource tree below always keeps room.
+  // Rendered as the top section of the left sidebar (App owns the column). No
+  // height cap needed now the namespace list is in a modal: the section is short
+  // and fixed, so the resource tree below gets the rest of the column.
   return (
-    <section className="flex max-h-[45%] shrink-0 flex-col border-b border-slate-200">
+    <section className="flex shrink-0 flex-col border-b border-slate-200">
       <div className="flex items-start justify-between border-b border-slate-200 px-4 py-3">
         <div>
           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -151,33 +155,24 @@ export function ScopePanel({ snapshot, onCollapse }: Props) {
       )}
 
       <div className="border-b border-slate-200 p-3">
-        <input
-          type="text"
-          placeholder="Filter…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className="w-full rounded border border-slate-300 px-2 py-1 text-sm outline-none focus:border-slate-500"
-        />
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-3 py-2">
-        {nsLoading && <p className="text-xs text-slate-400">Loading…</p>}
-        {nsError && (
-          <p className="text-xs text-red-600">Failed to load namespaces</p>
+        <button
+          type="button"
+          onClick={() => setPickerOpen(true)}
+          disabled={nsLoading || !available?.length}
+          className="flex w-full items-center justify-between gap-2 rounded border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
+        >
+          <span>Namespaces</span>
+          <span className="shrink-0 text-xs text-slate-500">
+            {nsLoading ? "loading…" : `${selected.size} of ${available?.length ?? 0}`}
+          </span>
+        </button>
+        {nsError ? (
+          <p className="mt-1 text-xs text-red-600">Failed to load namespaces</p>
+        ) : (
+          <p className="mt-1 break-words text-[10px] text-slate-400" title={summary}>
+            {summary}
+          </p>
         )}
-        {visible.map((ns) => (
-          <label
-            key={ns}
-            className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-100"
-          >
-            <input
-              type="checkbox"
-              checked={selected.has(ns)}
-              onChange={() => toggle(ns)}
-            />
-            <span className="truncate">{ns}</span>
-          </label>
-        ))}
       </div>
 
       <div className="border-t border-slate-200 p-3">
@@ -221,6 +216,20 @@ export function ScopePanel({ snapshot, onCollapse }: Props) {
           </p>
         )}
       </div>
+
+      {/* Mounting is opening: the picker seeds its draft from `selected` on
+          mount, so there's no open/close state to keep in sync. */}
+      {pickerOpen && (
+        <NamespacePicker
+          available={available ?? []}
+          selected={selected}
+          onDone={(next) => {
+            setSelected(next);
+            setPickerOpen(false);
+          }}
+          onCancel={() => setPickerOpen(false)}
+        />
+      )}
     </section>
   );
 }

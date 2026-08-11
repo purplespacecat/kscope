@@ -31,7 +31,7 @@ const snapshot: Snapshot = {
 
 vi.mock("./api/client", () => ({
   getLatest: vi.fn(async () => snapshot),
-  getNamespaces: vi.fn(async () => ["web"]),
+  getNamespaces: vi.fn(async () => ["web", "api", "db"]),
   getContexts: vi.fn(async () => []),
   getManifest: vi.fn(async () => "kind: Namespace"),
   refresh: vi.fn(),
@@ -79,6 +79,26 @@ describe("sidebar collapsing", () => {
     expect(await screen.findByText("Overview")).toBeInTheDocument();
     expect(
       screen.getByText("Select a resource in the tree or graph to inspect it."),
+    ).toBeInTheDocument();
+  });
+
+  it("scopes the next run through the namespace picker", async () => {
+    // Covers the wiring the picker's own tests can't: that Done lands back in
+    // ScopePanel's selection and reaches the Run discovery button.
+    const user = userEvent.setup();
+    renderApp();
+
+    // Seeded from the snapshot's scope: one namespace of the three available.
+    expect(
+      await screen.findByRole("button", { name: /run discovery \(1\)/i }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^namespaces/i }));
+    await user.click(screen.getByRole("checkbox", { name: /select all/i }));
+    await user.click(screen.getByRole("button", { name: /done/i }));
+
+    expect(
+      screen.getByRole("button", { name: /run discovery \(3\)/i }),
     ).toBeInTheDocument();
   });
 

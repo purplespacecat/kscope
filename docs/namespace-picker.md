@@ -1,6 +1,8 @@
 # Namespace picker — a modal with select-all
 
-Status: **designed**, not yet implemented.
+Status: **implemented** on `feat/namespace-picker-modal`. The picker's behaviour is
+covered by component tests; the modal's visual layout (centring, column counts)
+is browser-only.
 
 ## 1. Problem
 
