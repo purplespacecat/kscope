@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   absolutePositions,
   anchoredViewport,
-  firstResolved,
-  groupAnchorIds,
   type Point,
   type ViewportRect,
 } from "./viewport";
@@ -53,38 +51,6 @@ describe("anchoredViewport", () => {
       zoom: 0.04,
     });
     expect(out.zoom).toBe(0.04);
-  });
-});
-
-describe("groupAnchorIds", () => {
-  // Toggling a group replaces nodes rather than moving them, and which id
-  // survives depends on the direction. Rather than predict the direction at
-  // click time — which misreads a click on the expanded container, whose id is
-  // also `gid` — both candidates are offered and whichever exists afterwards
-  // wins: expanded has `gid__h` (header) plus `gid` (container), collapsed has
-  // only `gid` (card).
-  it("prefers the header card over the bare group id", () => {
-    expect(groupAnchorIds("__kg__ns/web__Pod")).toEqual([
-      "__kg__ns/web__Pod__h",
-      "__kg__ns/web__Pod",
-    ]);
-  });
-});
-
-describe("firstResolved", () => {
-  const abs = new Map<string, Point>([
-    ["a", { x: 1, y: 2 }],
-    ["b", { x: 3, y: 4 }],
-  ]);
-
-  it("takes the first candidate that exists", () => {
-    expect(firstResolved(abs, ["missing", "b", "a"])).toEqual({ x: 3, y: 4 });
-  });
-
-  it("returns undefined when nothing resolves", () => {
-    // The caller leaves the viewport untouched in this case — failing to anchor
-    // beats panning to an arbitrary place.
-    expect(firstResolved(abs, ["missing", "gone"])).toBeUndefined();
   });
 });
 

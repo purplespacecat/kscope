@@ -19,9 +19,12 @@ it is no longer where the eye left it.
 **B. Clicking a collapsed kind-group card** ("Pods `12` ▸"). The handler
 toggles `expandedGroups` and returns early. Selection never changes, so there
 is no remount and the viewport is preserved — but dagre re-lays-out everything
-underneath it. Worse, the clicked card is not moved but *destroyed*: `gid`
-becomes a container `gid` plus a brand-new header card `${gid}__h`. Nothing is
-highlighted, and the group that just opened can land off-screen.
+underneath it. Worse, as the layout stood at the time, the clicked card was not
+moved but *destroyed*: `gid` became a container `gid` plus a brand-new header card
+`${gid}__h`. Nothing is highlighted, and the group that just opened can land
+off-screen. (The card is stable now — see
+[`group-expansion.md`](group-expansion.md) — but the anchoring below had to cope
+with that swap.)
 
 ## 2. Intent
 
@@ -58,16 +61,15 @@ effect, then cleared:
 
 ```ts
 interface Anchor {
-  ids: string[];               // candidates to look for after the reflow, best first
+  id: string;                  // node to look for after the reflow
   pos: Point;                  // the clicked node's absolute position before it
   forSelection: string | null; // the selection this anchor belongs to
 }
 ```
 
-`ids` are the candidates to look for **after** the reflow (§4.3); `pos` is the
-clicked node's absolute position **before** it. They can describe different
-nodes: for a group card the candidates are the group's post-toggle
-representatives, while `pos` is always measured from the card actually clicked.
+`id` is the node to look for **after** the reflow (§4.3); `pos` is its absolute
+position **before** it. For a group toggle both refer to the group *card*, even
+when the click landed on the members box — the card is what must not move.
 `forSelection` is what distinguishes an anchored transition from a refit (§4.5).
 
 State, not a ref, because it must be readable during the render that follows
@@ -95,32 +97,31 @@ containers carry no `parentId`, but recursion would overflow the stack and take
 the canvas down, and an order-dependent break point would pan by an arbitrary
 offset when the pre- and post-reflow positions resolved through different ones.
 
-### 4.3 Candidate ids, not a predicted successor
+### 4.3 The card's id is stable
 
-Toggling a group replaces nodes rather than moving them, so the anchor id is not
-the clicked id. There are **three** clickable ids per kind-group, not two:
+Every kind-group has two clickable nodes, and their ids never overlap:
 
-| Node | id | State |
+| Node | id | Present when |
 | --- | --- | --- |
-| collapsed card | `gid` | collapsed |
-| expanded header card | `${gid}__h` | expanded |
-| expanded container box | `gid` | expanded |
+| group card | `gid` | always |
+| members box | `${gid}__m` | expanded |
 
-The container and the collapsed card **share an id** while being in opposite
-states, so no rule based on the clicked id alone can tell them apart. An earlier
-design predicted the toggle direction from id equality and consequently broke
-collapse-by-clicking-the-box, and mis-anchored by the container padding.
+Because the card keeps `gid` in both states, the anchor is simply "hold `gid`",
+and its `pos` is read from the card rather than from the clicked node — so
+collapsing by clicking the box background anchors on the card too, instead of
+comparing two different points. Resource nodes need no mapping either; their ids
+are equally stable.
 
-Two consequences:
+Toggle **direction** comes from the `expandedGroups` set inside the functional
+updater (`prev.has(gid) ? delete : add`), never from the clicked id.
 
-- **Direction** comes from the `expandedGroups` set inside the functional
-  updater (`prev.has(gid) ? delete : add`), which reflects actual membership and
-  cannot be fooled by a shared id.
-- **The anchor doesn't need the direction at all.** `groupAnchorIds(gid)` offers
-  both candidates, best first — `[`${gid}__h`, `gid`]` — and whichever exists
-  after the reflow wins. Expanded has the header (preferred over the container's
-  corner); collapsed has only the card. Resource nodes need no mapping; their ids
-  are stable.
+This replaced an earlier design in which expanding swapped the card for a
+`${gid}__h` header inside a container that *reused* `gid`. The shared id meant no
+rule based on the clicked id could distinguish a collapsed card from an expanded
+container, which broke collapse-by-clicking-the-box and mis-anchored by the
+container padding. See [`group-expansion.md`](group-expansion.md), which removed
+the header card and with it `groupAnchorIds`, `firstResolved` and
+`HEADER_SUFFIX`.
 
 ### 4.4 Viewport math
 
@@ -141,8 +142,11 @@ The effect lives in a small child component inside `<ReactFlow>`, since
 `useReactFlow()` requires that context — the same reason `RecenterButton` is a
 child rather than inline in `GraphCanvas`.
 
-If no candidate id resolves after the reflow, the effect is a no-op and the
+If the id does not resolve after the reflow, the effect is a no-op and the
 anchor clears: the viewport stays put rather than jumping somewhere arbitrary.
+That branch has no test of its own — the helper whose miss case used to be
+unit-tested was deleted with the successor rule (§4.3), and no path now reaches
+it, since a card and a resource node both outlive their own reflow.
 
 The pan is **relative** — it reads the current viewport and applies a delta — so
 applying one anchor twice doubles the correction. StrictMode double-invokes mount
@@ -226,7 +230,6 @@ re-centers share one resolver, so they all see the same final viewport.
 
 - the compensation math of §4.4, asserted as the screen-position invariant
   rather than bare arithmetic, and at a non-1.0 zoom;
-- the candidate-id ordering of §4.3, and the resolver's miss case;
 - `absolutePositions` for a nested container, a dangling `parentId`, top-level
   passthrough, and a parent cycle — including that a cycle resolves identically
   whichever member is visited first, since an order-dependent break point would
@@ -293,10 +296,10 @@ mount is unchanged by this work.
 
 | File | Change |
 | --- | --- |
-| `web/src/lib/viewport.ts` | new — pure compensation math, candidate-id helpers, absolute positions |
+| `web/src/lib/viewport.ts` | new — pure compensation math and absolute positions |
 | `web/src/lib/viewport.test.ts` | new — unit tests for the above |
 | `web/src/components/GraphCanvas.anchor.test.tsx` | new — DOM-level anchoring/toggle tests, with the jsdom stubs xyflow needs |
-| `web/src/components/GraphCanvas.tsx` | anchor state, `AnchorKeeper` child inside `<ReactFlow>`, `viewKey` replacing the `selectedId` remount key, `HEADER_SUFFIX` shared with `layout()`, `RecenterButton` home adoption |
+| `web/src/components/GraphCanvas.tsx` | anchor state, `AnchorKeeper` child inside `<ReactFlow>`, `viewKey` replacing the `selectedId` remount key, `RecenterButton` home adoption |
 | `README.md` | the Quickstart's click behaviour, plus a jsdom/canvas-testing note under "notes that save you a debugging session" |
 
 `App.tsx` is unchanged: origin detection lives entirely in `GraphCanvas`, which

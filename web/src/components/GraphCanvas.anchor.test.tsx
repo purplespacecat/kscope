@@ -46,9 +46,15 @@ Object.defineProperties(globalThis.HTMLElement.prototype, {
 (globalThis.SVGElement.prototype as unknown as { getBBox: () => DOMRect }).getBBox =
   () => ({ x: 0, y: 0, width: 0, height: 0 }) as DOMRect;
 
+// Mirrors GraphCanvas's own constant; the box must clear the card, not merely
+// sit a pixel below it.
+const NODE_H = 56;
+
 const NS = "core/namespace/web";
 const DEP = "apps/deployment/web/api";
 const POD_GROUP = `__kg__${DEP}__Pod`;
+// The members-only box that appears below the card once the group is expanded.
+const POD_BOX = `${POD_GROUP}__m`;
 const pods = Array.from({ length: 6 }, (_, i) => `core/pod/web/api-6d4f${i}`);
 
 // A SECOND namespace subtree is load-bearing, not scenery. With only one branch,
@@ -94,8 +100,10 @@ const snapshot: Snapshot = {
   stats: { counts: { Pod: 12 }, durationMs: 1 },
 };
 
+const state = vi.hoisted(() => ({ snapshot: null as unknown as Snapshot }));
+
 vi.mock("../api/client", () => ({
-  getLatest: vi.fn(async () => snapshot),
+  getLatest: vi.fn(async () => state.snapshot),
   getNamespaces: vi.fn(async () => ["web"]),
   getContexts: vi.fn(async () => []),
   getManifest: vi.fn(async () => "kind: Pod"),
@@ -145,7 +153,53 @@ const NOTHING_SELECTED = "Select a resource in the tree or graph to inspect it."
 
 beforeEach(() => {
   window.history.replaceState(null, "", "/");
+  state.snapshot = snapshot;
 });
+
+// Mirrors the reported case: a namespace with seven group-forming kinds, so its
+// children exceed WRAP_AT and get packed into a `__grid__` container. The card is
+// then a grid member rather than a top-level dagre node — a different code path
+// for both ranking and anchor resolution, and the one the bug was reported
+// against. 23 nodes keeps it under NODE_BUDGET.
+const GRID_NS = "core/namespace/flux-system";
+const GRID_ID = `__grid__${GRID_NS}`;
+const GRID_KINDS = [
+  "ConfigMap",
+  "Secret",
+  "Service",
+  "ServiceAccount",
+  "NetworkPolicy",
+  "Kustomization",
+  "GitRepository",
+];
+const GR_GROUP = `__kg__${GRID_NS}__GitRepository`;
+
+const griddedSnapshot: Snapshot = {
+  scope: { context: "kind-dev", namespaces: ["flux-system"] },
+  timestamp: "2026-08-11T09:00:00Z",
+  cluster: { context: "kind-dev", server: "https://x", version: "v1.33.0" },
+  nodes: [
+    { id: "cluster", kind: "Cluster", name: "kind-dev", health: "healthy", synthetic: true },
+    {
+      id: GRID_NS,
+      kind: "Namespace",
+      name: "flux-system",
+      parentId: "cluster",
+      health: "healthy",
+    },
+    ...GRID_KINDS.flatMap((kind) =>
+      [0, 1, 2].map((i) => ({
+        id: `${kind.toLowerCase()}/flux-system/${kind}-${i}`,
+        kind,
+        name: `${kind}-${i}`,
+        parentId: GRID_NS,
+        namespace: "flux-system",
+        health: "healthy" as const,
+      })),
+    ),
+  ],
+  edges: [],
+};
 
 describe("focus anchoring", () => {
   it("keeps a clicked resource at the same screen position while its subgraph is rebuilt", async () => {
@@ -168,20 +222,45 @@ describe("focus anchoring", () => {
     });
   });
 
-  it("expands a group card and collapses it again", async () => {
+  it("expands and collapses from the card, which stays put throughout", async () => {
     renderApp();
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
     expect(nodeEl(pods[0])).toBeNull(); // collapsed: members not rendered
 
     fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeTruthy());
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
     expect(nodeEl(pods[0])).toBeTruthy();
 
-    // Round-trip guards the toggle direction: it is read from the clicked card's
-    // id, so a card that has just expanded must collapse rather than re-expand.
-    fireEvent.click(nodeEl(`${POD_GROUP}__h`)!);
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeNull());
+    // The card is the same node in both states — it never leaves the layout — so
+    // the round trip is driven from it rather than from a replacement header.
+    fireEvent.click(nodeEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeNull());
     expect(nodeEl(pods[0])).toBeNull();
+    expect(nodeEl(POD_GROUP)).toBeTruthy();
+  });
+
+  it("puts the members in a box below the card, not in a box beside it", async () => {
+    // The reported bug: the expanded group left the parent's grid and became a
+    // container ranked as the grid's *sibling*, so dagre placed the two side by
+    // side, the ~1300px box overflowed the viewport and the grid was shoved off
+    // the opposite edge.
+    //
+    // Only placement is asserted here. The card's *screen* position — the "don't
+    // throw me around" half — can't be checked in jsdom: the initial fitView
+    // never completes (nothing is measured), so it retries on this very node
+    // update and permanently overwrites the anchor pan. Measured directly: zoom
+    // goes 1 → 0.07 on the expand, which anchoring never does. That half is
+    // browser-verified.
+    renderApp();
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+
+    fireEvent.click(nodeEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
+
+    const card = translateOf(nodeEl(POD_GROUP)!);
+    const box = translateOf(nodeEl(POD_BOX)!);
+    expect(box.y).toBeGreaterThan(card.y); // below…
+    expect(box.y - card.y).toBeGreaterThan(NODE_H); // …by more than the card's own height
   });
 
   // The remount decision needs its own observable. fitView is a no-op under
@@ -218,19 +297,20 @@ describe("focus anchoring", () => {
     });
   });
 
-  it("collapses when the expanded group's container background is clicked", async () => {
+  it("collapses when the members box background is clicked", async () => {
     renderApp();
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
 
-    fireEvent.click(nodeEl(POD_GROUP)!); // the collapsed card → expand
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeTruthy());
+    fireEvent.click(nodeEl(POD_GROUP)!); // the card → expand
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
 
-    // Once expanded, the node carrying id POD_GROUP is the translucent container
-    // box, not the card — same id, opposite state. Its padding and the gaps
-    // between members are clickable, and clicking there must collapse the group.
-    fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeNull());
+    // The box's padding and the gaps between members are clickable, and clicking
+    // there collapses the group. It carries its own id rather than sharing the
+    // card's, which is what previously made a background click read as "expand".
+    fireEvent.click(nodeEl(POD_BOX)!);
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeNull());
     expect(nodeEl(pods[0])).toBeNull();
+    expect(nodeEl(POD_GROUP)).toBeTruthy();
   });
 
   it("leaves the selection alone when a group card is toggled", async () => {
@@ -239,10 +319,37 @@ describe("focus anchoring", () => {
     expect(await screen.findByText(NOTHING_SELECTED)).toBeInTheDocument();
 
     fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(`${POD_GROUP}__h`)).toBeTruthy());
+    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
 
     // Group cards aren't resources: expanding one must not hijack the details
     // panel or re-root the focus subgraph.
     expect(screen.getByText(NOTHING_SELECTED)).toBeInTheDocument();
+  });
+
+  it("ranks the members box below the grid when the card is packed into one", async () => {
+    // Seven group-forming kinds push the namespace past WRAP_AT, so the card is a
+    // grid member. Measured behaviour: the box hangs off the grid container, so it
+    // lands below the grid rather than directly beneath its own card — worth
+    // pinning, since this is the shape the bug was reported against and the anchor
+    // has to resolve the card through the grid's parentId chain.
+    state.snapshot = griddedSnapshot;
+    renderApp();
+    await waitFor(() => expect(nodeEl(GRID_ID)).toBeTruthy());
+    expect(nodeEl(GR_GROUP)).toBeTruthy(); // the card, packed inside the grid
+
+    fireEvent.click(nodeEl(GR_GROUP)!);
+    await waitFor(() => expect(nodeEl(`${GR_GROUP}__m`)).toBeTruthy());
+
+    // Clear of the grid's *bottom edge*, which is what distinguishes a rank below
+    // from a sibling on the same rank. Comparing bare `y` values would pass
+    // either way: dagre centres nodes within a rank, so a shorter box sits a few
+    // pixels lower than a taller grid even as its sibling.
+    const grid = nodeEl(GRID_ID)! as HTMLElement;
+    const gridBottom = translateOf(grid).y + parseFloat(grid.style.height);
+    expect(translateOf(nodeEl(`${GR_GROUP}__m`)!).y).toBeGreaterThanOrEqual(
+      gridBottom,
+    );
+    // The card survives the toggle and stays inside the grid.
+    expect(nodeEl(GR_GROUP)).toBeTruthy();
   });
 });
