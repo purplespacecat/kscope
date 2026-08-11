@@ -213,3 +213,9 @@ Notes that save you a debugging session:
   degrades to browser equivalents.
 - A second `kscope-desktop` launch exits with **status 1 on success** — that's
   Wails signalling "handed off to the running instance".
+- Testing the graph canvas under jsdom needs `ResizeObserver`, `DOMMatrixReadOnly`
+  and `offsetWidth/Height` stubs (see `GraphCanvas.anchor.test.tsx`), and even
+  then nodes inside a group container measure as 0×0 and get clamped onto one
+  point — container geometry can't be asserted headlessly. Use `fireEvent`, not
+  `user-event`: a full pointer sequence reaches d3-zoom, which dereferences
+  `event.view` (null in jsdom).

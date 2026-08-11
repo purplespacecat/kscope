@@ -169,21 +169,39 @@ introduced by removing the guaranteed remount, so it is in scope here.
 
 ## 7. Testing
 
-Pure functions in a new `web/src/lib/viewport.ts`, unit-tested in
-`viewport.test.ts` — mirroring the existing `lib/display.ts` / `display.test.ts`
-pairing:
+**Unit** — `web/src/lib/viewport.test.ts`, mirroring the existing
+`lib/display.ts` / `display.test.ts` pairing:
 
-- the compensation math of §4.4, including a non-1.0 zoom;
-- the successor mapping of §4.3, both directions;
-- `absPos` for a node nested inside a container, where relative and absolute
-  positions differ.
+- the compensation math of §4.4, asserted as the screen-position invariant
+  rather than bare arithmetic, and at a non-1.0 zoom;
+- the successor mapping and toggle direction of §4.3, both ways;
+- `absolutePositions` for a nested container, a dangling `parentId`, and
+  top-level passthrough.
 
-That is where the risk of being wrong actually lives.
+**Component** — `web/src/components/GraphCanvas.anchor.test.tsx` renders the real
+`App` with the real canvas (only `api/client` is mocked) and reads screen
+positions straight off the DOM transforms:
 
-**Deliberately not covered:** component-level interaction tests for the canvas.
-`GraphCanvas` is mocked out of the current suite because jsdom lacks
-`ResizeObserver`/`DOMMatrix`; polyfilling that to assert on viewport transforms
-is a larger job than this fix and belongs in its own change.
+- a clicked resource holds its screen position while its subgraph is rebuilt —
+  this covers the `viewKey` decision and the batched anchor/selection update,
+  the riskiest part of the design;
+- a group card expands and collapses again, guarding the §4.3 toggle direction
+  at DOM level;
+- toggling a group card leaves the selection untouched (§6).
+
+**Known limit.** Nodes inside a group container (`extent: "parent"`) cannot have
+their geometry asserted under jsdom: xyflow measures the container as 0x0 and
+clamps every member onto a single point, so member positions in the DOM are
+meaningless. Stubbing `getBoundingClientRect` and the ResizeObserver
+`contentRect` does not reach the code path that populates measurements. Group
+*card* pixel-accuracy therefore rests on the unit-tested math plus a manual
+browser check; the toggle *behaviour* is covered above.
+
+Related observation: under jsdom the initial `fitView` never completes (nothing
+is measured), so it retries on the next node update and overwrites the anchor
+pan. In a real browser the fit completes at mount — but it does imply a narrow
+race if a click lands before the initial fit settles. Pre-existing: `fitView` on
+mount is unchanged by this work.
 
 ## 8. Files touched
 
@@ -191,6 +209,7 @@ is a larger job than this fix and belongs in its own change.
 | --- | --- |
 | `web/src/lib/viewport.ts` | new — pure compensation math + successor mapping |
 | `web/src/lib/viewport.test.ts` | new — unit tests for the above |
+| `web/src/components/GraphCanvas.anchor.test.tsx` | new — DOM-level anchoring/toggle tests, with the jsdom stubs xyflow needs |
 | `web/src/components/GraphCanvas.tsx` | anchor state, `AnchorKeeper` child inside `<ReactFlow>`, `viewKey` replacing the `selectedId` remount key, `HEADER_SUFFIX` shared with `layout()`, `RecenterButton` home recapture |
 
 `App.tsx` is unchanged: origin detection lives entirely in `GraphCanvas`, which
