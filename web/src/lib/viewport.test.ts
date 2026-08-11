@@ -113,7 +113,7 @@ describe("absolutePositions", () => {
     expect(abs.get("leaf")).toEqual({ x: 111, y: 122 });
   });
 
-  it("falls back to the raw position on a parent cycle instead of overflowing", () => {
+  it("gives every node on a parent cycle its raw position", () => {
     // Unreachable from today's layout(), but the dangling-parent case is
     // defended, and an unguarded chain walk would take the canvas down with a
     // stack overflow rather than merely failing to anchor.
@@ -123,8 +123,24 @@ describe("absolutePositions", () => {
       { id: "pong", position: { x: 3, y: 3 }, parentId: "ping" },
     ]);
     expect(abs.get("self")).toEqual({ x: 1, y: 1 });
-    expect(abs.get("ping")).toBeDefined();
-    expect(abs.get("pong")).toBeDefined();
+    expect(abs.get("ping")).toEqual({ x: 2, y: 2 });
+    expect(abs.get("pong")).toEqual({ x: 3, y: 3 });
+  });
+
+  it("resolves a cycle the same way whichever member is seen first", () => {
+    // Breaking the walk wherever re-entry happens to be detected would make the
+    // result depend on array order, and a pre-reflow position resolved through
+    // one break point against a post-reflow position resolved through another
+    // would pan the viewport by an arbitrary offset.
+    const cycle = [
+      { id: "ping", position: { x: 2, y: 2 }, parentId: "pong" },
+      { id: "pong", position: { x: 3, y: 3 }, parentId: "ping" },
+    ];
+    const forward = absolutePositions(cycle);
+    const reversed = absolutePositions([...cycle].reverse());
+
+    expect(forward.get("ping")).toEqual(reversed.get("ping"));
+    expect(forward.get("pong")).toEqual(reversed.get("pong"));
   });
 
   it("falls back to the raw position when the parent is missing", () => {

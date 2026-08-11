@@ -1,7 +1,8 @@
 # Focus anchoring — keep the clicked node put across a reflow
 
 Status: **implemented** on `fix/graph-focus-anchoring`. Pure geometry is
-unit-tested; the canvas wiring is verified by use (see §7).
+unit-tested and the canvas wiring is covered by a DOM-level component suite;
+group-container geometry remains browser-only (see §7).
 
 ## 1. Problem
 
@@ -56,13 +57,18 @@ One piece of state in `GraphCanvas`, set by the click handler, consumed by an
 effect, then cleared:
 
 ```ts
-type Anchor = { id: string; pos: { x: number; y: number } };
+interface Anchor {
+  ids: string[];               // candidates to look for after the reflow, best first
+  pos: Point;                  // the clicked node's absolute position before it
+  forSelection: string | null; // the selection this anchor belongs to
+}
 ```
 
-`id` is the node to look for **after** the reflow; `pos` is the clicked node's
-absolute position **before** it. The two can describe different nodes: for a
-group card the anchor id is the successor of §4.3, while `pos` is always
-measured from the card actually clicked.
+`ids` are the candidates to look for **after** the reflow (§4.3); `pos` is the
+clicked node's absolute position **before** it. They can describe different
+nodes: for a group card the candidates are the group's post-toggle
+representatives, while `pos` is always measured from the card actually clicked.
+`forSelection` is what distinguishes an anchored transition from a refit (§4.5).
 
 State, not a ref, because it must be readable during the render that follows
 the click — `GraphCanvas` already documents that refs cannot be written during
@@ -82,6 +88,12 @@ pure and directly unit-testable — simpler than the originally designed third
 return value, which would have threaded container origins through `layout()`'s
 internals. A dangling `parentId` falls back to the raw position: failing to
 anchor beats NaN coordinates, which would corrupt the viewport instead.
+
+The walk is iterative, not recursive, and detects a `parentId` cycle — every node
+on a cycle keeps its raw position. Unreachable from today's `layout()`, where
+containers carry no `parentId`, but recursion would overflow the stack and take
+the canvas down, and an order-dependent break point would pan by an arbitrary
+offset when the pre- and post-reflow positions resolved through different ones.
 
 ### 4.3 Candidate ids, not a predicted successor
 
@@ -175,16 +187,28 @@ outlive the subgraph it was measured against: `recenter()` calls `fitView()`,
 lands on a viewport that does not match the stale `home`, and the button never
 hides again.
 
-Fix: a `recentering` ref is set before `fitView`, and the resulting move-end
-*adopts* that viewport as the new home instead of comparing against the stale
-one. This regression is introduced by removing the guaranteed remount, so it is
-in scope here.
+Fix: `recenter` awaits `fitView` and *adopts* the landing viewport as the new
+home, instead of comparing against the stale one. This regression is introduced
+by removing the guaranteed remount, so it is in scope here.
 
-`fitView` returns `Promise<boolean>` and schedules no transition when there is
-nothing fittable — reachable via `Ctrl-0` or the View menu before discovery has
-run. No transition means no move-end will ever arrive to clear the flag, and the
-user's next pan would then be adopted as home, hiding the button when it should
-be showing. So the flag is also cleared when the promise reports `false`.
+Two things about `fitView` shape this, both verified against the installed
+@xyflow/react 12.10.2 rather than assumed from its type:
+
+- Its `Promise<boolean>` resolves only ever with `true` — one `resolve(true)`
+  call in the whole bundle. The `false` branch that its *type* advertises belongs
+  to the sibling helpers (`zoomIn`, `setCenter`, …), so a `!fitted` check is dead
+  code.
+- It settles when the transition **finishes**, and only once nodes are
+  initialised. With an empty graph — reachable via `Ctrl-0` or the View menu
+  before discovery has run — it never settles at all.
+
+So `recenter` bails out when there are no nodes, and otherwise takes the settled
+viewport as home. An earlier attempt used a `recentering` flag cleared from the
+move-end handler; that left the flag stuck on an empty graph (no move-end ever
+arrives) so the user's next pan was adopted as home, and it adopted a
+half-animated viewport when two re-centers overlapped — d3-zoom dispatches `end`
+on interrupt too. Deriving home from the settled promise removes both: concurrent
+re-centers share one resolver, so they all see the same final viewport.
 
 ## 6. Non-goals
 
@@ -203,8 +227,10 @@ be showing. So the flag is also cleared when the promise reports `false`.
 - the compensation math of §4.4, asserted as the screen-position invariant
   rather than bare arithmetic, and at a non-1.0 zoom;
 - the candidate-id ordering of §4.3, and the resolver's miss case;
-- `absolutePositions` for a nested container, a dangling `parentId`, a parent
-  cycle, and top-level passthrough.
+- `absolutePositions` for a nested container, a dangling `parentId`, top-level
+  passthrough, and a parent cycle — including that a cycle resolves identically
+  whichever member is visited first, since an order-dependent break point would
+  pan by an arbitrary offset.
 
 **Component** — `web/src/components/GraphCanvas.anchor.test.tsx` renders the real
 `App` with the real canvas (only `api/client` is mocked) and reads screen
@@ -240,6 +266,15 @@ Use `fireEvent`, not `user-event`: a full pointer sequence reaches d3-zoom's
 mousedown handler, which dereferences `event.view` — null on jsdom-dispatched
 events — and crashes the test.
 
+**`RecenterButton` is deliberately left untested**, despite §5 being where a bug
+actually shipped. Its behaviour is only observable through a viewport transition
+end, which comes from real d3-zoom gestures that jsdom can't produce; and the
+specific empty-graph bug manifested as a *stuck flag*, which the fix removes
+rather than corrects. A test asserting "the viewport doesn't move on an empty
+graph" would pass against the broken and fixed versions alike — a third vacuous
+test would be worse than a documented gap. Verifying this properly needs a real
+browser.
+
 **Known limit.** Nodes inside a group container (`extent: "parent"`) cannot have
 their geometry asserted under jsdom: xyflow measures the container as 0x0 and
 clamps every member onto a single point, so member positions in the DOM are
@@ -261,7 +296,8 @@ mount is unchanged by this work.
 | `web/src/lib/viewport.ts` | new — pure compensation math, candidate-id helpers, absolute positions |
 | `web/src/lib/viewport.test.ts` | new — unit tests for the above |
 | `web/src/components/GraphCanvas.anchor.test.tsx` | new — DOM-level anchoring/toggle tests, with the jsdom stubs xyflow needs |
-| `web/src/components/GraphCanvas.tsx` | anchor state, `AnchorKeeper` child inside `<ReactFlow>`, `viewKey` replacing the `selectedId` remount key, `HEADER_SUFFIX` shared with `layout()`, `RecenterButton` home recapture |
+| `web/src/components/GraphCanvas.tsx` | anchor state, `AnchorKeeper` child inside `<ReactFlow>`, `viewKey` replacing the `selectedId` remount key, `HEADER_SUFFIX` shared with `layout()`, `RecenterButton` home adoption |
+| `README.md` | the Quickstart's click behaviour, plus a jsdom/canvas-testing note under "notes that save you a debugging session" |
 
 `App.tsx` is unchanged: origin detection lives entirely in `GraphCanvas`, which
 already knows whether a click came from its own canvas.

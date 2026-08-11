@@ -508,12 +508,9 @@ function layout(
 // component itself stays mounted so the desktop-menu subscription survives
 // while the button is hidden.
 function RecenterButton() {
-  const { fitView, getViewport } = useReactFlow();
+  const { fitView, getViewport, getNodes } = useReactFlow();
   const [moved, setMoved] = useState(false);
   const home = useRef<Viewport | null>(null);
-  // Set while a Re-center animation is in flight, so its own move-end is read
-  // as "this is the new home" rather than compared against the old one.
-  const recentering = useRef(false);
 
   // Capture the fitted viewport as "home". Double-rAF: the initial fitView
   // applies after nodes are measured, a frame or two past mount.
@@ -532,16 +529,6 @@ function RecenterButton() {
 
   useOnViewportChange({
     onEnd: (vp) => {
-      // Anchored transitions don't remount the canvas, so `home` can outlive
-      // the subgraph it was measured against. Re-fitting re-establishes it;
-      // without this the stale comparison never comes back equal and the
-      // button would never hide again.
-      if (recentering.current) {
-        recentering.current = false;
-        home.current = vp;
-        setMoved(false);
-        return;
-      }
       const h = home.current;
       if (!h) return;
       const atHome =
@@ -552,15 +539,23 @@ function RecenterButton() {
     },
   });
 
-  const recenter = useCallback(async () => {
-    recentering.current = true;
-    // fitView schedules no transition when there is nothing fittable — reachable
-    // via Ctrl-0 or the View menu before discovery has run — and then no
-    // move-end ever arrives to clear the flag, so the user's next pan would be
-    // adopted as the new home.
-    const fitted = await fitView({ padding: 0.1, duration: 300 });
-    if (!fitted) recentering.current = false;
-  }, [fitView]);
+  const recenter = useCallback(() => {
+    // xyflow only settles fitView's promise once nodes are initialised, so with
+    // an empty graph — reachable via Ctrl-0 or the View menu before discovery
+    // has run — it never resolves at all. Bail out rather than leave a pending
+    // continuation behind.
+    if (getNodes().length === 0) return;
+    // The promise resolves when the transition finishes, so its landing
+    // viewport *is* the new home. Adopting it beats comparing against the old
+    // one, which anchored selections leave describing a subgraph that no longer
+    // exists — the comparison would never come back equal and the button would
+    // never hide. Concurrent re-centers share one resolver, so they all adopt
+    // the same settled viewport rather than a half-animated one.
+    void fitView({ padding: 0.1, duration: 300 }).then(() => {
+      home.current = getViewport();
+      setMoved(false);
+    });
+  }, [fitView, getNodes, getViewport]);
 
   // The desktop View menu drives the same action. Subscribing here rather than
   // in App keeps it next to the only code that holds the ReactFlow context.

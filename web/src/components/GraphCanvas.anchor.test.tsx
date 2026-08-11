@@ -208,8 +208,14 @@ describe("focus anchoring", () => {
     fireEvent.click(row);
 
     // A tree click has no on-screen origin to preserve, so this path keeps the
-    // fit-the-new-subgraph behaviour, which is driven by the remount.
-    await waitFor(() => expect(nodeEl(DEP)).not.toBe(before));
+    // fit-the-new-subgraph behaviour, which is driven by the remount. Assert the
+    // node is still rendered as well as rebuilt — `null !== before` would
+    // otherwise satisfy this if DEP simply dropped out of the subgraph.
+    await waitFor(() => {
+      const after = nodeEl(DEP);
+      expect(after).toBeTruthy();
+      expect(after).not.toBe(before);
+    });
   });
 
   it("collapses when the expanded group's container background is clicked", async () => {

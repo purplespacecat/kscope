@@ -59,28 +59,53 @@ export function firstResolved(
 export function absolutePositions(nodes: Placed[]): Map<string, Point> {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const abs = new Map<string, Point>();
-  const walking = new Set<string>();
 
-  const resolve = (n: Placed): Point => {
-    const done = abs.get(n.id);
-    if (done) return done;
-    // A cycle contributes no offset, so the node keeps its raw position. Not
-    // reachable from today's layout() — containers carry no parentId — but an
-    // unguarded chain walk would overflow the stack and take the canvas down,
-    // where a dangling parentId merely fails to anchor.
-    if (walking.has(n.id)) return { x: 0, y: 0 };
-    walking.add(n.id);
-    const parent = n.parentId ? byId.get(n.parentId) : undefined;
-    // A dangling parentId falls back to the raw position: failing to anchor
-    // beats NaN coordinates, which would corrupt the viewport instead.
-    const base = parent ? resolve(parent) : { x: 0, y: 0 };
-    walking.delete(n.id);
-    const p = { x: base.x + n.position.x, y: base.y + n.position.y };
-    abs.set(n.id, p);
-    return p;
-  };
+  for (const start of nodes) {
+    if (abs.has(start.id)) continue;
 
-  for (const n of nodes) resolve(n);
+    // Walk up to an ancestor whose absolute position is already known (or to the
+    // top of the chain), then apply the chain downwards. Iterative rather than
+    // recursive so no chain, however deep or malformed, can overflow the stack.
+    const chain: Placed[] = [];
+    const onPath = new Set<string>();
+    let base: Point = { x: 0, y: 0 };
+    let cur: Placed | undefined = start;
+    let cyclic = false;
+
+    while (cur) {
+      const known = abs.get(cur.id);
+      if (known) {
+        base = known;
+        break;
+      }
+      if (onPath.has(cur.id)) {
+        cyclic = true;
+        break;
+      }
+      onPath.add(cur.id);
+      chain.push(cur);
+      // A dangling parentId simply ends the walk, leaving the topmost node with
+      // its raw position: failing to anchor beats NaN coordinates, which would
+      // corrupt the viewport instead.
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+
+    if (cyclic) {
+      // Every node on the cycle keeps its raw position, so the outcome doesn't
+      // depend on which member happened to be reached first — an order-dependent
+      // break point would pan by an arbitrary offset when the pre- and
+      // post-reflow positions resolved through different ones. Unreachable from
+      // today's layout(), where containers carry no parentId.
+      for (const n of chain) if (!abs.has(n.id)) abs.set(n.id, n.position);
+      continue;
+    }
+
+    for (let i = chain.length - 1; i >= 0; i--) {
+      base = { x: base.x + chain[i].position.x, y: base.y + chain[i].position.y };
+      abs.set(chain[i].id, base);
+    }
+  }
+
   return abs;
 }
 
