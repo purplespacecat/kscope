@@ -77,10 +77,13 @@ wails build   # → cmd/kscope-desktop/build/bin/kscope-desktop
 3. **Run discovery** (the button, or `Ctrl-R`). A few seconds later the map is
    there: tree on the left, graph in the middle, details on the right.
 4. **Explore.** Click anything — in the tree or the graph — to focus it: the
-   graph re-frames around its ancestry and contents, the details panel shows
-   health, relationships, labels, its manifest, a copyable `kubectl` command,
-   and (for Flux-managed resources) an "Open in Git" link. Dashed group cards
-   fold same-kind siblings; click to expand. `Ctrl-0` re-centers.
+   details panel shows health, relationships, labels, its manifest, a copyable
+   `kubectl` command, and (for Flux-managed resources) an "Open in Git" link.
+   Dashed group cards fold same-kind siblings; click to expand. Clicking *in
+   the graph* keeps the clicked card exactly where it is on screen while the
+   rest of the map reflows around it, so you never lose your place; picking a
+   resource from the tree instead re-frames the view around it. `Ctrl-0`
+   re-centers.
 5. **Come back later.** The snapshot persists — closing and reopening kscope
    shows the same map until you run a new discovery.
 
@@ -210,3 +213,9 @@ Notes that save you a debugging session:
   degrades to browser equivalents.
 - A second `kscope-desktop` launch exits with **status 1 on success** — that's
   Wails signalling "handed off to the running instance".
+- Testing the graph canvas under jsdom needs `ResizeObserver`, `DOMMatrixReadOnly`
+  and `offsetWidth/Height` stubs (see `GraphCanvas.anchor.test.tsx`), and even
+  then nodes inside a group container measure as 0×0 and get clamped onto one
+  point — container geometry can't be asserted headlessly. Use `fireEvent`, not
+  `user-event`: a full pointer sequence reaches d3-zoom, which dereferences
+  `event.view` (null in jsdom).

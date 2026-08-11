@@ -26,6 +26,14 @@ import {
   kindPlural,
   kindRank,
 } from "../lib/display";
+import {
+  HEADER_SUFFIX,
+  absolutePositions,
+  anchoredViewport,
+  firstResolved,
+  groupAnchorIds,
+  type Point,
+} from "../lib/viewport";
 
 interface Props {
   nodes: GraphNode[];
@@ -397,7 +405,7 @@ function layout(
     if (c.header) {
       flowNodes.push(
         groupHeaderCard(
-          `${c.id}__h`,
+          `${c.id}${HEADER_SUFFIX}`,
           c.id,
           c.header.kind,
           c.header.count,
@@ -492,13 +500,15 @@ function layout(
 // (Needs the ReactFlow context, hence a child component inside <ReactFlow>.)
 //
 // Only rendered once the view has actually left the fitted "home" position:
-// the fitted viewport is captured just after mount, every pan/zoom end is
-// compared against it, and clicking Re-center animates back to home — whose
-// own move-end then compares equal and hides the button again. The component
-// itself stays mounted so the desktop-menu subscription survives while the
-// button is hidden.
+// the fitted viewport is captured just after mount, and every pan/zoom end is
+// compared against it. Clicking Re-center re-fits and *adopts* the landing
+// viewport as the new home — necessary because anchored selections change the
+// graph's contents without remounting, which would otherwise leave `home`
+// describing a subgraph that no longer exists and the button stuck visible. The
+// component itself stays mounted so the desktop-menu subscription survives
+// while the button is hidden.
 function RecenterButton() {
-  const { fitView, getViewport } = useReactFlow();
+  const { fitView, getViewport, getNodes } = useReactFlow();
   const [moved, setMoved] = useState(false);
   const home = useRef<Viewport | null>(null);
 
@@ -529,10 +539,23 @@ function RecenterButton() {
     },
   });
 
-  const recenter = useCallback(
-    () => fitView({ padding: 0.1, duration: 300 }),
-    [fitView],
-  );
+  const recenter = useCallback(() => {
+    // xyflow only settles fitView's promise once nodes are initialised, so with
+    // an empty graph — reachable via Ctrl-0 or the View menu before discovery
+    // has run — it never resolves at all. Bail out rather than leave a pending
+    // continuation behind.
+    if (getNodes().length === 0) return;
+    // The promise resolves when the transition finishes, so its landing
+    // viewport *is* the new home. Adopting it beats comparing against the old
+    // one, which anchored selections leave describing a subgraph that no longer
+    // exists — the comparison would never come back equal and the button would
+    // never hide. Concurrent re-centers share one resolver, so they all adopt
+    // the same settled viewport rather than a half-animated one.
+    void fitView({ padding: 0.1, duration: 300 }).then(() => {
+      home.current = getViewport();
+      setMoved(false);
+    });
+  }, [fitView, getNodes, getViewport]);
 
   // The desktop View menu drives the same action. Subscribing here rather than
   // in App keeps it next to the only code that holds the ReactFlow context.
@@ -556,6 +579,51 @@ function RecenterButton() {
   );
 }
 
+/** The node to keep put across a reflow, and where it sat before it. */
+interface Anchor {
+  /** Ids to look for *after* the reflow, best first — see groupAnchorIds. */
+  ids: string[];
+  /** The clicked node's absolute position *before* the reflow. */
+  pos: Point;
+  /**
+   * The selection this anchor was captured for. A selection change that doesn't
+   * match it came from somewhere else (k9s handoff, tree, ?focus=) and must
+   * refit rather than anchor.
+   */
+  forSelection: string | null;
+}
+
+// Pans the viewport so the anchored node keeps its screen position once the new
+// layout lands. Needs the ReactFlow context, hence a child inside <ReactFlow>
+// (same reason as RecenterButton). No rAF dance: unlike fitView this doesn't
+// wait on measurement — the coordinates come from our own layout.
+function AnchorKeeper({
+  anchor,
+  absPos,
+  onApplied,
+}: {
+  anchor: Anchor | null;
+  absPos: Map<string, Point>;
+  onApplied: () => void;
+}) {
+  const { getViewport, setViewport } = useReactFlow();
+  // The pan is relative — it reads the current viewport and applies a delta — so
+  // applying the same anchor twice doubles the correction. StrictMode
+  // double-invokes mount effects, so guard on identity rather than trusting the
+  // dependency array to fire exactly once.
+  const applied = useRef<Anchor | null>(null);
+  useEffect(() => {
+    if (!anchor || applied.current === anchor) return;
+    applied.current = anchor;
+    const next = firstResolved(absPos, anchor.ids);
+    // Unresolvable anchor: leave the viewport alone rather than jump somewhere
+    // arbitrary.
+    if (next) setViewport(anchoredViewport(anchor.pos, next, getViewport()));
+    onApplied();
+  }, [anchor, absPos, getViewport, setViewport, onApplied]);
+  return null;
+}
+
 export function GraphCanvas({
   nodes,
   edges,
@@ -571,6 +639,19 @@ export function GraphCanvas({
     () => layout(nodes, edges, hiddenCounts, selectedId, expandedGroups),
     [nodes, edges, hiddenCounts, selectedId, expandedGroups],
   );
+
+  // Clicking in the canvas keeps the clicked node under the cursor: the anchor
+  // is recorded at click time and applied once the new layout is in hand.
+  const [anchor, setAnchor] = useState<Anchor | null>(null);
+  const absPos = useMemo(() => absolutePositions(flowNodes), [flowNodes]);
+  const clearAnchor = useCallback(() => setAnchor(null), []);
+
+  // Remount key. Was `selectedId`, which reset the viewport on every selection
+  // — the very thing that lost the clicked node. Now it only bumps for
+  // selections arriving from outside the canvas (tree, details panel, k9s
+  // handoff, ?focus= URL), where there is no screen position to preserve and
+  // fitting the new subgraph is the right answer.
+  const [viewKey, setViewKey] = useState(0);
 
   // Hover-dwell tooltip: linger on a node for HOVER_DELAY_MS and the full
   // (untruncated) identity appears — no click needed.
@@ -591,15 +672,25 @@ export function GraphCanvas({
   };
   useEffect(() => clearTip, []); // clear pending timer on unmount
 
-  // Any view change must dismiss the tooltip immediately. A selection change
-  // remounts <ReactFlow> (keyed on selectedId), which destroys the node the
-  // mouse was over — so its onNodeMouseLeave never fires and the tooltip
-  // would linger over the new view. This also covers selections made outside
-  // the canvas (tree panel, k9s focus handoff). Render-time adjustment
-  // instead of an effect, same pattern as ScopePanel.
+  // Any view change must dismiss the tooltip immediately. A selection from
+  // outside the canvas remounts <ReactFlow> (keyed on viewKey), which destroys
+  // the node the mouse was over — so its onNodeMouseLeave never fires and the
+  // tooltip would linger over the new view. Anchored selections don't remount,
+  // but the layout still shifts under the tooltip, so both cases dismiss it.
+  // Render-time adjustment instead of an effect, same pattern as ScopePanel.
   const [seenSelectedId, setSeenSelectedId] = useState(selectedId);
   if (selectedId !== seenSelectedId) {
     setSeenSelectedId(selectedId);
+    // Anchor only when this exact selection is the one the anchor was captured
+    // for. Anchor *presence* alone isn't enough: it lives until AnchorKeeper's
+    // effect runs, and an out-of-band selection (the k9s handoff is an IPC
+    // callback, not a discrete React event) could land in that window and be
+    // mistaken for the click's own. A stale anchor is dropped so the remount
+    // can't pan on top of fitView.
+    if (!anchor || anchor.forSelection !== selectedId) {
+      setViewKey((k) => k + 1);
+      if (anchor) setAnchor(null);
+    }
     if (tip) setTip(null);
   }
   // The dwell timer needs the same treatment: a timer scheduled in the old
@@ -651,9 +742,9 @@ export function GraphCanvas({
         </div>
       )}
       <ReactFlow
-        // Remount when the focus root changes so fitView re-frames the new
-        // subgraph — simpler than driving the viewport imperatively.
-        key={selectedId ?? "root"}
+        // Remount to let fitView re-frame — but only for selections from
+        // outside the canvas. See viewKey above.
+        key={viewKey}
         nodes={flowNodes}
         edges={flowEdges}
         fitView
@@ -671,8 +762,18 @@ export function GraphCanvas({
           // under the tooltip.
           clearTip();
           const d = n.data as { raw?: GraphNode; groupToggle?: string };
+          // Where the clicked card is right now — the position to hold.
+          const here = absPos.get(n.id) ?? null;
           if (d.groupToggle) {
             const gid = d.groupToggle;
+            // Direction comes from the set itself, never from the clicked id:
+            // an expanded group's *container* shares the collapsed card's id, so
+            // id equality misreads a click on the box background as "expand" and
+            // the group would never collapse. The anchor doesn't need the
+            // direction either — it offers both candidate ids.
+            if (here) {
+              setAnchor({ ids: groupAnchorIds(gid), pos: here, forSelection: selectedId });
+            }
             setExpandedGroups((prev) => {
               const next = new Set(prev);
               if (next.has(gid)) next.delete(gid);
@@ -681,7 +782,12 @@ export function GraphCanvas({
             });
             return;
           }
-          if (d.raw) onSelect(d.raw);
+          if (d.raw) {
+            // Resource ids are stable across the reflow, so the node itself is
+            // the anchor. Batched with the selection change below.
+            if (here) setAnchor({ ids: [d.raw.id], pos: here, forSelection: d.raw.id });
+            onSelect(d.raw);
+          }
         }}
         onNodeMouseEnter={(e, n) => {
           const raw = (n.data as { raw?: GraphNode }).raw;
@@ -707,6 +813,7 @@ export function GraphCanvas({
         <Background />
         <Controls />
         <RecenterButton />
+        <AnchorKeeper anchor={anchor} absPos={absPos} onApplied={clearAnchor} />
         {flowNodes.length > 15 && <MiniMap pannable zoomable />}
       </ReactFlow>
     </div>
