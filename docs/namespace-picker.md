@@ -59,12 +59,18 @@ needed, so the resource tree below gains space.
   which is *also* `z-50`. Neither element's ancestors create a stacking context,
   so both competed in the root context and the tooltip won on tree order —
   `<aside>` precedes `<main>`. The top layer sits above all of it.
-- **jsdom implements neither `showModal` nor the top layer**, so tests fall back
-  to setting the `open` attribute: enough to render and query the dialog, not
-  enough to exercise the trap or the stacking. Those are browser-verified only.
-- Focus is captured before the dialog opens and restored on unmount. The
-  browser's own restore only runs on `close()`, and this component is unmounted
-  instead.
+- **jsdom implements only `dialog.open`** — no `showModal`, no top layer — and its
+  UA stylesheet hides `dialog:not([open])`, so the contents would not be
+  queryable at all. A shim in `src/test/setup.ts` supplies `showModal`/`close`,
+  keeping the component free of environment branches. It mirrors the spec where
+  it matters: `showModal()` on an already-open dialog returns rather than throws,
+  which is what makes StrictMode's double-invoked mount effect safe. The trap and
+  the stacking remain browser-verified only.
+- Focus is captured in a **state initialiser**, not an effect. React calls
+  `autoFocus` during the commit phase, so any effect — layout or passive — runs
+  after focus has already moved into the filter input and would capture that
+  instead of the trigger. Restoring on unmount is necessary because the browser's
+  own restore only runs on `close()`.
 - Namespaces in a grid: 2 columns by default, 3 at `sm`, 4 at `lg`, with a
   `max-height` and overflow as a safety valve — a 200-namespace cluster degrades
   to scrolling rather than overflowing the screen. "No scrolling" is the goal for
@@ -152,8 +158,12 @@ today; the picker gets its own, driven through props:
 - a newer `selected` arriving mid-open is adopted while the draft is untouched,
   and ignored once it has been edited (both directions asserted).
 
+- focus moves into the filter on open and returns to the trigger on close.
+
 **Not covered:** the focus trap, `::backdrop` and top-layer stacking, because
 jsdom implements neither `showModal` nor the top layer. Those are browser-only.
+StrictMode's double-invoked effects are also not exercised, since tests render
+without it — the `open` guard is what makes that safe rather than a test.
 
 ## 10. Files touched
 

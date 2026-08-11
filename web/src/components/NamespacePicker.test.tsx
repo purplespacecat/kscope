@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { NamespacePicker } from "./NamespacePicker";
 
@@ -42,7 +43,41 @@ const committed = (onDone: ReturnType<typeof vi.fn>) =>
 const selectAll = () => screen.getByRole("checkbox", { name: /select all/i });
 const row = (ns: string) => screen.getByRole("checkbox", { name: ns });
 
+/** Mirrors how ScopePanel mounts the picker: a real trigger the user clicks. */
+function Harness() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Namespaces
+      </button>
+      {open && (
+        <NamespacePicker
+          available={NAMESPACES}
+          selected={new Set()}
+          onDone={() => setOpen(false)}
+          onCancel={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
 describe("NamespacePicker", () => {
+  it("returns focus to the control that opened it", async () => {
+    // Without this, closing leaves focus on a removed element, so it falls back
+    // to <body> and the next Tab restarts from the top of the document.
+    const user = userEvent.setup();
+    render(<Harness />);
+    const trigger = screen.getByRole("button", { name: "Namespaces" });
+
+    await user.click(trigger);
+    expect(screen.getByPlaceholderText("Filter…")).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(trigger).toHaveFocus();
+  });
+
   it("selects every namespace when select-all is clicked unfiltered", async () => {
     const { onDone, user } = open();
 

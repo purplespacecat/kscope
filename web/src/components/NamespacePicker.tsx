@@ -40,24 +40,25 @@ export function NamespacePicker({ available, selected, onDone, onCancel }: Props
     if (!edited) setDraft(onCluster(available, selected));
   }
 
-  // Declared before the effect that opens the dialog: effects run in order, so
-  // this captures the trigger *before* focus moves inside. Unmounting the dialog
-  // skips the browser's own focus restore, which only runs on close().
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    return () => opener?.focus?.();
-  }, []);
+  // Captured in a state initialiser, which runs during the first render — an
+  // effect would be too late, because React calls `autoFocus` in the commit
+  // phase and would have already moved focus into the filter input. Restoring on
+  // unmount is necessary because the browser's own restore only runs on close().
+  const [opener] = useState(() => document.activeElement as HTMLElement | null);
+  useEffect(() => () => opener?.focus?.(), [opener]);
 
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = dialogRef.current;
     // showModal() brings the focus trap, ::backdrop and top-layer stacking with
     // it — the last of which matters because the graph's hover tooltip is also
-    // z-50 and would otherwise paint over this on tree order. jsdom implements
-    // none of that, so tests fall back to the `open` attribute: enough to render
-    // and query, not enough to exercise the trap.
-    if (dialog?.showModal) dialog.showModal();
-    else dialog?.setAttribute("open", "");
+    // z-50 and would otherwise paint over this on tree order.
+    //
+    // The `open` check is for StrictMode, which double-invokes mount effects:
+    // calling showModal() on a dialog that is already modal is a no-op per spec,
+    // but on one merely marked `open` it throws InvalidStateError.
+    if (!dialog || dialog.open) return;
+    dialog.showModal();
   }, []);
 
   // Escape is handled here rather than left to the dialog's own `cancel` event so
