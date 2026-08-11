@@ -73,7 +73,10 @@ wails build   # → cmd/kscope-desktop/build/bin/kscope-desktop
    It reads the same kubeconfig as `kubectl` — `$KUBECONFIG`, then
    `~/.kube/config`.
 2. **Pick a scope** in the left panel: if your kubeconfig has several contexts
-   a cluster picker appears; below it, tick the namespaces you care about.
+   a cluster picker appears; below it, **Namespaces** opens a dialog listing the
+   cluster's namespaces in columns, with a filter and a *Select all* that applies
+   to whatever the filter is showing. The sidebar keeps a summary of what's
+   selected.
 3. **Run discovery** (the button, or `Ctrl-R`). A few seconds later the map is
    there: tree on the left, graph in the middle, details on the right.
 4. **Explore.** Click anything — in the tree or the graph — to focus it: the
