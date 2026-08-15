@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   MiniMap,
   Panel,
   ReactFlow,
+  getSmoothStepPath,
   useOnViewportChange,
   useReactFlow,
   type Edge as FlowEdge,
+  type EdgeProps,
   type Node as FlowNode,
   type Viewport,
 } from "@xyflow/react";
@@ -492,6 +496,13 @@ function layout(
       style: { stroke: "#cbd5e1" },
     });
   }
+  // One caption per (source, kind), pinned under the source card (see
+  // RelationshipEdge). A fan-out — one Service selecting five Pods — reads as a
+  // single "selects" under the Service, not five copies scattered along the
+  // lines; a fan-in — five resources managed by one Kustomization — captions
+  // each source card individually.
+  const captioned = new Set<string>(); // `${source}|${kind}` already captioned
+  const captionSlots = new Map<string, number>(); // source → chips stacked so far
   for (const e of edges) {
     const rel = EDGE_STYLE[e.kind];
     if (e.kind === "contains" && packed.has(e.target)) continue; // via container edge
@@ -509,15 +520,19 @@ function layout(
     // Infra containment renders child→parent so the line hangs from the
     // upper (infra) node down into the cluster instead of looping around.
     const flip = e.kind === "contains" && child && INFRA_KINDS.has(child.kind);
+    let caption: Pick<FlowEdge, "label" | "data"> | undefined;
+    if (e.kind !== "contains" && !dimmed && !captioned.has(`${e.source}|${e.kind}`)) {
+      captioned.add(`${e.source}|${e.kind}`);
+      const slot = captionSlots.get(e.source) ?? 0;
+      captionSlots.set(e.source, slot + 1);
+      caption = { label: e.kind, data: { labelSlot: slot } };
+    }
     flowEdges.push({
       id: e.id,
       source: flip ? e.target : e.source,
       target: flip ? e.source : e.target,
-      label: e.kind === "contains" || dimmed ? undefined : e.kind,
-      labelStyle: { fontSize: 10, fill: rel?.stroke ?? "#64748b" },
-      // Orthogonal routing for relationship edges — bezier curves between
-      // same-rank siblings loop unpleasantly.
-      type: rel ? "smoothstep" : undefined,
+      ...caption,
+      type: e.kind === "contains" ? undefined : "rel",
       style: rel
         ? { stroke: rel.stroke, strokeDasharray: "6 3", opacity: dimmed ? 0.3 : 1 }
         : { stroke: "#cbd5e1" },
@@ -526,6 +541,76 @@ function layout(
 
   return { flowNodes, flowEdges };
 }
+
+// Relationship edge with a pinned caption. The default edge label sits at the
+// path midpoint as bare SVG text in the same paint layer as every edge path —
+// which failed two ways in a converging graph: lines drawn later struck the
+// text through, and nothing said which line (or node) the caption belonged to.
+// This fixes both by construction. <EdgeLabelRenderer> is an HTML layer stacked
+// above ALL edge paths, so no line can ever cross a chip; and the chip hangs
+// directly under the edge's SOURCE card — captions name what the source does
+// ("api managed-by …", "gateway selects …"), so that is the node they must
+// visually attach to. Several captions on one card stack downward.
+const CAPTION_GAP = 10; // px between the card's bottom edge and its first chip
+const CAPTION_STEP = 17; // px between stacked chips
+
+function RelationshipEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style,
+  label,
+  data,
+}: EdgeProps) {
+  // Orthogonal routing — bezier curves between same-rank siblings loop
+  // unpleasantly.
+  const [path] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+  if (label == null) return <BaseEdge id={id} path={path} style={style} />;
+  const slot = (data as { labelSlot?: number } | undefined)?.labelSlot ?? 0;
+  const color = (style?.stroke as string) ?? "#64748b";
+  return (
+    <>
+      <BaseEdge id={id} path={path} style={style} />
+      <EdgeLabelRenderer>
+        <div
+          style={{
+            position: "absolute",
+            // (sourceX, sourceY) is the bottom-centre handle the line leaves
+            // from, so the chip sits threaded onto its own edge's first segment.
+            transform: `translate(-50%, 0) translate(${sourceX}px, ${sourceY + CAPTION_GAP + slot * CAPTION_STEP}px)`,
+            pointerEvents: "none",
+            background: "#fff",
+            border: `1px solid ${color}`,
+            color,
+            borderRadius: 8,
+            padding: "0 5px",
+            fontSize: 9,
+            fontWeight: 600,
+            lineHeight: "13px",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label}
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  );
+}
+
+// Module-level so the mapping keeps one identity across renders — xyflow warns
+// and re-creates all edges when it changes.
+const EDGE_TYPES = { rel: RelationshipEdge };
 
 // Escape hatch for lost viewports: one click re-frames the whole graph.
 // (Needs the ReactFlow context, hence a child component inside <ReactFlow>.)
@@ -778,6 +863,7 @@ export function GraphCanvas({
         key={viewKey}
         nodes={flowNodes}
         edges={flowEdges}
+        edgeTypes={EDGE_TYPES}
         fitView
         // Whole-cluster views are wide; the default minZoom (0.5) would stop
         // fitView from actually fitting them.
