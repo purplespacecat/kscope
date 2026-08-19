@@ -36,7 +36,7 @@ escape hatch.
 
 This applies only to clicks originating **in the canvas**. Selections arriving
 from elsewhere — the tree panel, a relationship link in the details panel, the
-k9s `Shift-G` handoff, and the initial `?focus=` URL — have no "same pixel" to
+k9s `Ctrl-G` handoff, and the initial `?focus=` URL — have no "same pixel" to
 preserve and keep today's fit-the-new-subgraph behaviour unchanged.
 
 ## 3. Approach

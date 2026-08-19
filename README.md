@@ -22,7 +22,7 @@ What the map shows:
   native file dialog.
 - **Infra layer** — cluster Nodes and a logical control-plane with a
   *depends-on* spine, k3s-aware.
-- **k9s handoff** — press `Shift-G` on a resource in [k9s](https://k9scli.io)
+- **k9s handoff** — press `Ctrl-G` on a resource in [k9s](https://k9scli.io)
   and kscope raises its window focused on that resource.
 
 The view is **semi-dynamic**: each discovery produces a snapshot that persists
@@ -101,7 +101,7 @@ If you already have a k9s plugins file, add the `kscope:` entry under your
 existing `plugins:` key instead — appending the whole file would produce two
 top-level `plugins:` keys and invalid YAML.
 
-Then in k9s, put the cursor on any resource and press `Shift-G`: the kscope
+Then in k9s, put the cursor on any resource and press `Ctrl-G`: the kscope
 window raises focused on that resource. If it isn't in the current snapshot
 (different cluster, namespace out of scope), kscope says so in a banner instead
 of silently doing nothing. kscope keeps a single window — a second launch hands

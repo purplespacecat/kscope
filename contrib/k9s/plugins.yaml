@@ -2,7 +2,7 @@
 #
 # Install by merging into ~/.config/k9s/plugins.yaml (k9s reads a single file,
 # so append this entry under an existing `plugins:` key rather than replacing
-# the file). Then press Shift-G on any resource to open it in kscope.
+# the file). Then press Ctrl-G on any resource to open it in kscope.
 #
 # k9s has no in-process plugin API — a plugin is a shell-out bound to a key —
 # so this launches the kscope binary. If kscope is already running, that
@@ -12,7 +12,12 @@
 # Requires kscope-desktop on $PATH.
 plugins:
   kscope:
-    shortCut: Shift-G
+    # Ctrl-G, not Shift-G: k9s's log view binds G to jump-to-bottom the way
+    # vim does, and a scopes:[all] plugin steals the key everywhere. Ctrl-H,
+    # Ctrl-I and Ctrl-M are not alternatives — those bytes are Backspace, Tab
+    # and Enter, so tcell (and therefore k9s) has no key name for them and the
+    # binding would silently never fire.
+    shortCut: Ctrl-G
     description: Graph in kscope
     # Available on every view. kscope resolves whatever it can and explains
     # itself in-app when a resource isn't in the current snapshot.
