@@ -2,7 +2,7 @@
 #
 # Install by merging into ~/.config/k9s/plugins.yaml (k9s reads a single file,
 # so append this entry under an existing `plugins:` key rather than replacing
-# the file). Then press Ctrl-G on any resource to open it in kscope.
+# the file). Then press Ctrl-T on any resource to open it in kscope.
 #
 # k9s has no in-process plugin API — a plugin is a shell-out bound to a key —
 # so this launches the kscope binary. If kscope is already running, that
@@ -12,12 +12,21 @@
 # Requires kscope-desktop on $PATH.
 plugins:
   kscope:
-    # Ctrl-G, not Shift-G: k9s's log view binds G to jump-to-bottom the way
-    # vim does, and a scopes:[all] plugin steals the key everywhere. Ctrl-H,
-    # Ctrl-I and Ctrl-M are not alternatives — those bytes are Backspace, Tab
-    # and Enter, so tcell (and therefore k9s) has no key name for them and the
-    # binding would silently never fire.
-    shortCut: Ctrl-G
+    # Ctrl-T was arrived at empirically against k9s v0.50.6, because this key
+    # space has several independent traps:
+    #   * Shift-G fires in resource lists, where it shadows vim-style
+    #     jump-to-bottom. (Plugins are not bound in the log view at all, so
+    #     that view was never affected.)
+    #   * Ctrl-H, Ctrl-I and Ctrl-M are the bytes for Backspace, Tab and
+    #     Enter, so tcell has no key name for them and k9s cannot bind them.
+    #   * Ctrl-G and Ctrl-E load, appear in the hint bar, and then never
+    #     dispatch — something below k9s's action map consumes the byte.
+    #   * Keys k9s already owns (Ctrl-X, Shift-Z, ...) are refused at load
+    #     with "duplicate plugin key found", which fails the whole file.
+    # So appearing in the hint bar does NOT prove a key works. Verify any
+    # replacement by pressing it and confirming k9s logs "Command ran
+    # successfully" in ~/.local/state/k9s/k9s.log.
+    shortCut: Ctrl-T
     description: Graph in kscope
     # Available on every view. kscope resolves whatever it can and explains
     # itself in-app when a resource isn't in the current snapshot.
