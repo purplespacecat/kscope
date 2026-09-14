@@ -3,6 +3,7 @@ package graph
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -36,6 +37,67 @@ type Rendered struct {
 	Text         string
 	OmittedNodes int
 	OmittedEdges int
+}
+
+type rowKind int
+
+const (
+	rowNode    rowKind = iota // one resource
+	rowGroup                  // "Pods (47)" header
+	rowMember                 // a member shown under a group
+	rowMore                   // "… +44 more"
+	rowKubectl                // the focus's kubectl line, no connector
+	rowEdge                   // Task 5
+)
+
+// row is one output line plus its children, built before anything is
+// written so truncation can drop rows and connectors can be chosen with
+// knowledge of what follows.
+type row struct {
+	kind   rowKind
+	label  string // left text, without connector
+	right  string // health / rollup text
+	level  int    // containment levels below the focus; focus = 0
+	health Health
+	name   string // sort key within a level
+	nodes  int    // snapshot nodes this row stands for (group: its total)
+	kids   []*row
+}
+
+// groupAt mirrors GROUP_AT in web/src/components/GraphCanvas.tsx; the two are
+// not shared, so keep them equal by hand.
+const groupAt = 3
+
+// groupExamples is how many members a group lists before "… +K more".
+const groupExamples = 3
+
+func severity(h Health) int {
+	switch h {
+	case HealthError:
+		return 3
+	case HealthWarning:
+		return 2
+	case HealthUnknown:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// rollup summarises a group's health as "✓3 !1 ✗1", omitting zero counts so
+// the common all-healthy case is just "✓47".
+func rollup(nodes []Node) string {
+	counts := map[Health]int{}
+	for _, n := range nodes {
+		counts[n.Health]++
+	}
+	var parts []string
+	for _, h := range []Health{HealthHealthy, HealthWarning, HealthError, HealthUnknown} {
+		if c := counts[h]; c > 0 {
+			parts = append(parts, healthGlyph(h)+strconv.Itoa(c))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // glyphCol is the rune column where health glyphs line up. Connectors are
@@ -160,29 +222,106 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	if len(chain) > 0 {
 		childIndent += indentStep
 	}
+	var kids []*row
 	if focus.Kubectl != "" {
-		v.sb.WriteString(childIndent + focus.Kubectl + "\n")
+		kids = append(kids, &row{kind: rowKubectl, label: focus.Kubectl, level: 0})
 	}
-
-	v.descend(focus.ID, childIndent, 1)
+	kids = append(kids, v.build(focus.ID, 1)...)
+	v.emit(kids, childIndent)
 
 	return Rendered{Text: v.sb.String()}, nil
 }
 
-// descend renders the children of id at the given indent, recursing while
-// the level is within depth.
-func (v *view) descend(id, indent string, level int) {
+// build returns the rows for id's children at the given level, grouping
+// leaf siblings of one kind once there are groupAt of them. Namespaces are
+// the drill path and never group.
+func (v *view) build(id string, level int) []*row {
 	if level > v.depth {
-		return
+		return nil
 	}
 	kids := v.children[id]
-	for i, k := range kids {
+	byKind := map[string][]Node{}
+	var kindOrder []string
+	for _, k := range kids {
+		if _, seen := byKind[k.Kind]; !seen {
+			kindOrder = append(kindOrder, k.Kind)
+		}
+		byKind[k.Kind] = append(byKind[k.Kind], k)
+	}
+
+	var rows []*row
+	for _, kind := range kindOrder {
+		members := byKind[kind]
+		allLeaves := true
+		for _, m := range members {
+			if len(v.children[m.ID]) > 0 {
+				allLeaves = false
+				break
+			}
+		}
+		if len(members) >= groupAt && allLeaves && kind != "Namespace" {
+			rows = append(rows, v.groupRow(kind, members, level))
+			continue
+		}
+		for _, k := range members {
+			r := &row{kind: rowNode, label: nodeLabel(k), right: healthText(k, false), level: level, health: k.Health, name: k.Name, nodes: 1}
+			r.kids = v.build(k.ID, level+1)
+			rows = append(rows, r)
+		}
+	}
+	return rows
+}
+
+func (v *view) groupRow(kind string, members []Node, level int) *row {
+	sorted := append([]Node(nil), members...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if si, sj := severity(sorted[i].Health), severity(sorted[j].Health); si != sj {
+			return si > sj
+		}
+		return sorted[i].Name < sorted[j].Name
+	})
+	worst := HealthHealthy
+	for _, m := range members {
+		if severity(m.Health) > severity(worst) {
+			worst = m.Health
+		}
+	}
+	g := &row{
+		kind:   rowGroup,
+		label:  pluralize(kind) + " (" + strconv.Itoa(len(members)) + ")",
+		right:  rollup(members),
+		level:  level,
+		health: worst,
+		name:   kind,
+		nodes:  len(members),
+	}
+	shown := sorted
+	if len(shown) > groupExamples {
+		shown = shown[:groupExamples]
+	}
+	for _, m := range shown {
+		g.kids = append(g.kids, &row{kind: rowMember, label: m.Name, right: healthText(m, false), level: level, health: m.Health, name: m.Name, nodes: 1})
+	}
+	if rest := len(members) - len(shown); rest > 0 {
+		g.kids = append(g.kids, &row{kind: rowMore, label: "… +" + strconv.Itoa(rest) + " more", level: level, nodes: rest})
+	}
+	return g
+}
+
+// emit writes rows at indent, choosing ├─/└─ by position. Kubectl rows are
+// bare: they hang under the focus without a connector.
+func (v *view) emit(rows []*row, indent string) {
+	for i, r := range rows {
+		if r.kind == rowKubectl {
+			v.sb.WriteString(indent + r.label + "\n")
+			continue
+		}
 		connector := "├─ "
-		if i == len(kids)-1 {
+		if i == len(rows)-1 {
 			connector = "└─ "
 		}
-		v.line(indent+connector, nodeLabel(k), healthText(k, false))
-		v.descend(k.ID, indent+indentStep, level+1)
+		v.line(indent+connector, r.label, r.right)
+		v.emit(r.kids, indent+indentStep)
 	}
 }
 

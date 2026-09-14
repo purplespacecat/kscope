@@ -175,3 +175,103 @@ func TestNeighbourhood_Errors(t *testing.T) {
 		t.Fatalf("budget 1023: err = %v, want ErrBudget", err)
 	}
 }
+
+// fleetFixture: a Deployment with five Pods in mixed health, so the pods
+// group; two ConfigMaps (below the threshold); three Deployments with
+// ReplicaSets (non-leaf, so never grouped); three Namespaces (exempt).
+func fleetFixture() *fixture {
+	f := &fixture{}
+	f.add(Node{ID: fxCluster, Kind: "Cluster", Name: "dev/ci1"})
+	for _, ns := range []string{"app", "ops", "web"} {
+		f.add(Node{ID: "core/namespace/" + ns, Kind: "Namespace", Name: ns, ParentID: fxCluster})
+	}
+	f.add(Node{ID: fxDeploy, Kind: "Deployment", Name: "web", Namespace: "app", ParentID: fxNS})
+	f.add(Node{ID: fxRS, Kind: "ReplicaSet", Name: "web-abc", Namespace: "app", ParentID: fxDeploy})
+	f.add(Node{ID: "core/pod/app/web-abc-err", Kind: "Pod", Name: "web-abc-err", Namespace: "app", ParentID: fxRS, Health: HealthError, Reason: "CrashLoopBackOff"})
+	f.add(Node{ID: "core/pod/app/web-abc-warn", Kind: "Pod", Name: "web-abc-warn", Namespace: "app", ParentID: fxRS, Health: HealthWarning, Reason: "ImagePullBackOff"})
+	for _, s := range []string{"a", "b", "c"} {
+		f.add(Node{ID: "core/pod/app/web-abc-" + s, Kind: "Pod", Name: "web-abc-" + s, Namespace: "app", ParentID: fxRS})
+	}
+	for _, c := range []string{"one", "two"} {
+		f.add(Node{ID: "core/configmap/app/" + c, Kind: "ConfigMap", Name: c, Namespace: "app", ParentID: fxNS})
+	}
+	// Three Deployments under ns ops, each owning a ReplicaSet: non-leaf.
+	for _, d := range []string{"d1", "d2", "d3"} {
+		f.add(Node{ID: "apps/deployment/ops/" + d, Kind: "Deployment", Name: d, Namespace: "ops", ParentID: "core/namespace/ops"})
+		f.add(Node{ID: "apps/replicaset/ops/" + d + "-rs", Kind: "ReplicaSet", Name: d + "-rs", Namespace: "ops", ParentID: "apps/deployment/ops/" + d})
+	}
+	return f
+}
+
+func TestNeighbourhood_GroupsLeafSiblings(t *testing.T) {
+	text := render(t, fleetFixture(), fxDeploy, ViewOptions{Depth: 2})
+	header := lineWith(t, text, "Pods (5)")
+	if !strings.Contains(header, "✓3 !1 ✗1") {
+		t.Fatalf("rollup missing or wrong: %q", header)
+	}
+	if strings.Contains(header, "?") {
+		t.Fatalf("zero counts must be omitted from the rollup: %q", header)
+	}
+	lineWith(t, text, "web-abc-err", "✗ CrashLoopBackOff")
+	lineWith(t, text, "web-abc-warn", "! ImagePullBackOff")
+	lineWith(t, text, "… +2 more")
+	// Unhealthy members come first, then one healthy example, then "more".
+	errAt := strings.Index(text, "web-abc-err")
+	warnAt := strings.Index(text, "web-abc-warn")
+	aAt := strings.Index(text, "web-abc-a")
+	moreAt := strings.Index(text, "… +2 more")
+	if !(errAt < warnAt && warnAt < aAt && aAt < moreAt) {
+		t.Fatalf("member order wrong:\n%s", text)
+	}
+	// Only three members are listed.
+	if strings.Contains(text, "web-abc-b") || strings.Contains(text, "web-abc-c") {
+		t.Fatalf("more than three members listed:\n%s", text)
+	}
+	// Members carry the name only; the kind is in the header.
+	if strings.Contains(text, "Pod web-abc-err") {
+		t.Fatalf("group members must not repeat the kind:\n%s", text)
+	}
+}
+
+func TestNeighbourhood_GroupingExemptions(t *testing.T) {
+	f := fleetFixture()
+
+	// Two ConfigMaps: below the threshold, listed individually.
+	ns := render(t, f, fxNS, ViewOptions{Depth: 1})
+	lineWith(t, ns, "ConfigMap one")
+	lineWith(t, ns, "ConfigMap two")
+	if strings.Contains(ns, "ConfigMaps (") {
+		t.Fatalf("two siblings must not group:\n%s", ns)
+	}
+
+	// Three Namespaces under the cluster: exempt.
+	cl := render(t, f, fxCluster, ViewOptions{Depth: 1})
+	for _, n := range []string{"ns app", "ns ops", "ns web"} {
+		lineWith(t, cl, n)
+	}
+	if strings.Contains(cl, "Namespaces (") {
+		t.Fatalf("namespaces must never group:\n%s", cl)
+	}
+
+	// Three Deployments that own ReplicaSets are non-leaf: never grouped,
+	// even at depth 1 where their children are not shown.
+	ops := render(t, f, "core/namespace/ops", ViewOptions{Depth: 1})
+	for _, d := range []string{"Deployment d1", "Deployment d2", "Deployment d3"} {
+		lineWith(t, ops, d)
+	}
+	if strings.Contains(ops, "Deployments (") {
+		t.Fatalf("non-leaf siblings must not group:\n%s", ops)
+	}
+}
+
+func TestNeighbourhood_GroupHeaderUsesPlural(t *testing.T) {
+	// "Ingress" → "Ingresses", via the same pluralize the k9s handoff uses.
+	f := &fixture{}
+	f.add(Node{ID: fxCluster, Kind: "Cluster", Name: "c"})
+	f.add(Node{ID: fxNS, Kind: "Namespace", Name: "app", ParentID: fxCluster})
+	for _, n := range []string{"a", "b", "c"} {
+		f.add(Node{ID: "networking.k8s.io/ingress/app/" + n, Kind: "Ingress", Name: n, Namespace: "app", ParentID: fxNS})
+	}
+	text := render(t, f, fxNS, ViewOptions{Depth: 1})
+	lineWith(t, text, "Ingresses (3)")
+}
