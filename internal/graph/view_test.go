@@ -275,3 +275,23 @@ func TestNeighbourhood_GroupHeaderUsesPlural(t *testing.T) {
 	text := render(t, f, fxNS, ViewOptions{Depth: 1})
 	lineWith(t, text, "Ingresses (3)")
 }
+
+// TestNeighbourhood_NamespacesNeverGroupEvenAsLeaves uses its own fixture of
+// three truly empty namespaces (no children anywhere) so the Namespace
+// exclusion in build is the only thing stopping the group — unlike
+// fleetFixture, where ns app/ns ops already own children and so are excluded
+// by allLeaves regardless of kind.
+func TestNeighbourhood_NamespacesNeverGroupEvenAsLeaves(t *testing.T) {
+	f := &fixture{}
+	f.add(Node{ID: fxCluster, Kind: "Cluster", Name: "dev/ci1"})
+	for _, ns := range []string{"a", "b", "c"} {
+		f.add(Node{ID: "core/namespace/" + ns, Kind: "Namespace", Name: ns, ParentID: fxCluster})
+	}
+	text := render(t, f, fxCluster, ViewOptions{Depth: 1})
+	for _, n := range []string{"ns a", "ns b", "ns c"} {
+		lineWith(t, text, n)
+	}
+	if strings.Contains(text, "Namespaces (") {
+		t.Fatalf("namespaces must never group, even when they are leaves:\n%s", text)
+	}
+}
