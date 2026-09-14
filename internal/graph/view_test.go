@@ -2,6 +2,7 @@ package graph
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -381,5 +382,138 @@ func TestNeighbourhood_FocusEdgesFollowDescendants(t *testing.T) {
 	// Outgoing before incoming.
 	if strings.Index(text, "mounts →") > strings.Index(text, "← selects") {
 		t.Fatalf("outgoing edges must precede incoming:\n%s", text)
+	}
+}
+
+// wideFixture: one namespace with 30 Deployments, each owning a ReplicaSet
+// with three Pods that mount a Secret. Alphabetical names so the total
+// order is predictable; one Deployment is unhealthy and must outlive the
+// healthy ones under pressure.
+func wideFixture() *fixture {
+	f := &fixture{}
+	f.add(Node{ID: fxCluster, Kind: "Cluster", Name: "dev/ci1"})
+	f.add(Node{ID: fxNS, Kind: "Namespace", Name: "app", ParentID: fxCluster})
+	f.add(Node{ID: fxSecret, Kind: "Secret", Name: "db-creds", Namespace: "app", ParentID: fxNS})
+	for i := 0; i < 30; i++ {
+		name := "d-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+		h := HealthHealthy
+		if name == "d-ma" {
+			h = HealthError
+		}
+		dep := "apps/deployment/app/" + name
+		rs := "apps/replicaset/app/" + name + "-rs"
+		f.add(Node{ID: dep, Kind: "Deployment", Name: name, Namespace: "app", ParentID: fxNS, Health: h})
+		f.add(Node{ID: rs, Kind: "ReplicaSet", Name: name + "-rs", Namespace: "app", ParentID: dep, Health: h})
+		for _, p := range []string{"1", "2", "3"} {
+			pod := "core/pod/app/" + name + "-rs-" + p
+			f.add(Node{ID: pod, Kind: "Pod", Name: name + "-rs-" + p, Namespace: "app", ParentID: rs, Health: h})
+			f.edge(EdgeMounts, pod, fxSecret)
+		}
+	}
+	return f
+}
+
+func TestNeighbourhood_BudgetIsAHardCap(t *testing.T) {
+	snap := wideFixture().snap()
+	full, err := Neighbourhood(snap, fxNS, ViewOptions{Depth: 3, Budget: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.OmittedNodes != 0 || len(full.Text) < 4096 {
+		t.Fatalf("fixture too small to exercise truncation: %d bytes, %d omitted", len(full.Text), full.OmittedNodes)
+	}
+
+	for _, budget := range []int{MinBudget, 2048, 4096} {
+		r, err := Neighbourhood(snap, fxNS, ViewOptions{Depth: 3, Budget: budget})
+		if err != nil {
+			t.Fatalf("budget %d: %v", budget, err)
+		}
+		if len(r.Text) > budget {
+			t.Fatalf("budget %d: output is %d bytes", budget, len(r.Text))
+		}
+		if r.OmittedNodes == 0 {
+			t.Fatalf("budget %d: expected truncation", budget)
+		}
+		last := strings.TrimRight(r.Text, "\n")
+		last = last[strings.LastIndex(last, "\n")+1:]
+		want := fmt.Sprintf("… truncated: %d nodes, %d edges omitted", r.OmittedNodes, r.OmittedEdges)
+		if !strings.Contains(last, want) {
+			t.Fatalf("budget %d: marker %q missing from last line %q", budget, want, last)
+		}
+		// Every line is whole: it is either a known label or the marker.
+		for _, l := range strings.Split(strings.TrimRight(r.Text, "\n"), "\n") {
+			l = strings.TrimSpace(strings.TrimLeft(l, "│├└─ "))
+			if l == "" {
+				t.Fatalf("budget %d: blank line in output:\n%s", budget, r.Text)
+			}
+		}
+	}
+}
+
+func TestNeighbourhood_BudgetReserve(t *testing.T) {
+	snap := wideFixture().snap()
+	r, err := Neighbourhood(snap, fxNS, ViewOptions{Depth: 3, Budget: 2048, Reserve: 600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Text)+600 > 2048 {
+		t.Fatalf("reserve not honoured: %d + 600 > 2048", len(r.Text))
+	}
+}
+
+func TestNeighbourhood_TruncationOrderIsTotal(t *testing.T) {
+	// At the minimum budget only a fraction of the 30 Deployments fit.
+	// Deepest-first drops all pods and ReplicaSets before any Deployment;
+	// then healthy-before-unhealthy keeps d-ma; then label order drops d-aa
+	// before d-zb.
+	r, err := Neighbourhood(wideFixture().snap(), fxNS, ViewOptions{Depth: 3, Budget: MinBudget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineWith(t, r.Text, "Deployment d-ma", "✗")
+	if strings.Contains(r.Text, "ReplicaSet") || strings.Contains(r.Text, "Pod") || strings.Contains(r.Text, "mounts →") {
+		t.Fatalf("deeper levels must go before any Deployment:\n%s", r.Text)
+	}
+	if strings.Contains(r.Text, "Deployment d-aa") {
+		t.Fatalf("d-aa is the first healthy Deployment to be dropped:\n%s", r.Text)
+	}
+	// Identical input, identical output — the order has no hidden state.
+	again, _ := Neighbourhood(wideFixture().snap(), fxNS, ViewOptions{Depth: 3, Budget: MinBudget})
+	if again.Text != r.Text {
+		t.Fatalf("truncation is not deterministic")
+	}
+}
+
+func TestNeighbourhood_GroupsShrinkBeforeAnythingIsOmitted(t *testing.T) {
+	// Sweep budgets downward over a fixture whose 30 ReplicaSets each own
+	// three pods, so thirty "Pods (3)" groups exist. Invariants of the step
+	// order: while any member of the d-ma group is still shown, nothing has
+	// been omitted (step 1 costs no nodes); and a member never outlives its
+	// header.
+	snap := wideFixture().snap()
+	full, err := Neighbourhood(snap, fxNS, ViewOptions{Depth: 3, Budget: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawShrunk := false
+	for budget := len(full.Text) + 64; budget >= MinBudget; budget -= 64 {
+		r, err := Neighbourhood(snap, fxNS, ViewOptions{Depth: 3, Budget: budget})
+		if err != nil {
+			t.Fatal(err)
+		}
+		member := strings.Contains(r.Text, "d-ma-rs-1")
+		header := strings.Contains(r.Text, "Pods (3)")
+		if member && r.OmittedNodes > 0 {
+			t.Fatalf("budget %d: members shown yet nodes omitted — groups did not shrink first:\n%s", budget, r.Text)
+		}
+		if member && !header {
+			t.Fatalf("budget %d: member without its header:\n%s", budget, r.Text)
+		}
+		if header && !member {
+			sawShrunk = true
+		}
+	}
+	if !sawShrunk {
+		t.Fatal("sweep never observed a shrunk group; fixture or budgets need adjusting")
 	}
 }

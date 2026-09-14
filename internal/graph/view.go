@@ -28,8 +28,9 @@ var (
 
 // ViewOptions bounds a projection. Zero values mean the defaults.
 type ViewOptions struct {
-	Depth  int // containment levels below the focus
-	Budget int // output bytes
+	Depth   int // containment levels below the focus
+	Budget  int // output bytes
+	Reserve int // bytes the caller appends after Text; counted against Budget
 }
 
 // Rendered is the projection plus what the budget cost it.
@@ -235,9 +236,143 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	}
 	kids = append(kids, v.build(focus.ID, 1)...)
 	kids = append(kids, v.edgeRows([]string{focus.ID}, 0, focus.Health)...)
-	v.emit(kids, childIndent)
 
-	return Rendered{Text: v.sb.String()}, nil
+	skeleton := v.sb.String() // ancestors + focus line, already written
+	omittedN, omittedE := 0, 0
+	for {
+		v.sb.Reset()
+		v.sb.WriteString(skeleton)
+		v.emit(kids, childIndent)
+		if omittedN > 0 || omittedE > 0 {
+			v.sb.WriteString(childIndent + "… truncated: " + strconv.Itoa(omittedN) + " nodes, " + strconv.Itoa(omittedE) + " edges omitted\n")
+		}
+		if v.sb.Len()+opts.Reserve <= budget {
+			break
+		}
+		if shrinkGroup(&kids) {
+			continue
+		}
+		if _, e, ok := dropOne(&kids, func(r *row) bool { return r.kind == rowEdge }); ok {
+			omittedE += e
+			continue
+		}
+		n, e, ok := dropOne(&kids, func(r *row) bool { return r.kind == rowNode || r.kind == rowGroup })
+		if !ok {
+			break // skeleton only; MinBudget guarantees it fits
+		}
+		omittedN += n
+		omittedE += e
+	}
+	return Rendered{Text: v.sb.String(), OmittedNodes: omittedN, OmittedEdges: omittedE}, nil
+}
+
+// subtreeCounts returns the snapshot nodes and edge rows a row stands for,
+// itself included, so a dropped subtree is reported exactly once.
+func subtreeCounts(r *row) (nodes, edges int) {
+	switch r.kind {
+	case rowNode, rowGroup:
+		nodes += r.nodes
+	case rowEdge:
+		edges++
+	}
+	for _, k := range r.kids {
+		n, e := subtreeCounts(k)
+		nodes += n
+		edges += e
+	}
+	return nodes, edges
+}
+
+// candidate is a removable row and where it lives, so removal is a slice
+// edit on its parent.
+type candidate struct {
+	parent *[]*row
+	idx    int
+	row    *row
+}
+
+// collect walks the tree for rows of the given kinds. Group members and
+// "more" rows are never candidates on their own — step 1 removes them as a
+// unit via their group.
+func collect(rows *[]*row, want func(*row) bool, out *[]candidate) {
+	for i, r := range *rows {
+		if want(r) {
+			*out = append(*out, candidate{parent: rows, idx: i, row: r})
+		}
+		if r.kind == rowNode || r.kind == rowGroup {
+			collect(&r.kids, want, out)
+		}
+	}
+}
+
+// pickFirst orders candidates deepest-level first, then healthy before
+// unhealthy, then by label, then by name — the total order of §4.3.
+func pickFirst(cs []candidate) *candidate {
+	if len(cs) == 0 {
+		return nil
+	}
+	sort.SliceStable(cs, func(i, j int) bool {
+		a, b := cs[i].row, cs[j].row
+		if a.level != b.level {
+			return a.level > b.level
+		}
+		if sa, sb := severity(a.health), severity(b.health); sa != sb {
+			return sa < sb
+		}
+		if a.label != b.label {
+			return a.label < b.label
+		}
+		return a.name < b.name
+	})
+	return &cs[0]
+}
+
+func remove(c *candidate) {
+	p := *c.parent
+	*c.parent = append(p[:c.idx:c.idx], p[c.idx+1:]...)
+}
+
+// shrinkGroup empties one group's member and "more" rows, keeping its edge
+// rows. Returns false when no group has anything left to shrink.
+func shrinkGroup(kids *[]*row) bool {
+	var cs []candidate
+	collect(kids, func(r *row) bool {
+		if r.kind != rowGroup {
+			return false
+		}
+		for _, k := range r.kids {
+			if k.kind == rowMember || k.kind == rowMore {
+				return true
+			}
+		}
+		return false
+	}, &cs)
+	c := pickFirst(cs)
+	if c == nil {
+		return false
+	}
+	var kept []*row
+	for _, k := range c.row.kids {
+		if k.kind == rowEdge {
+			kept = append(kept, k)
+		}
+	}
+	c.row.kids = kept
+	return true
+}
+
+// dropOne removes the first candidate of the given kinds and returns what
+// it cost.
+func dropOne(kids *[]*row, want func(*row) bool) (nodes, edges int, ok bool) {
+	var cs []candidate
+	collect(kids, want, &cs)
+	c := pickFirst(cs)
+	if c == nil {
+		return 0, 0, false
+	}
+	nodes, edges = subtreeCounts(c.row)
+	remove(c)
+	return nodes, edges, true
 }
 
 // build returns the rows for id's children at the given level, grouping
