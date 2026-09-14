@@ -52,7 +52,7 @@ type Node struct {
 	// CrashLoopBackOff or ImagePullBackOff. Empty for healthy nodes and for
 	// kinds whose health has no single reason. Old snapshots lack it and
 	// decode unchanged.
-	Reason    string `json:"reason,omitempty"`
+	Reason string `json:"reason,omitempty"`
 	// Synthetic marks logical nodes with no direct API object behind them
 	// (the cluster root, and control-plane components on k3s where the whole
 	// plane is one process). Rendered dashed in the UI.

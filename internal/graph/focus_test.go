@@ -84,6 +84,64 @@ func TestResolveNode(t *testing.T) {
 	}
 }
 
+func TestResolveCandidates(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  NodeRef
+		want []string // IDs, in snapshot order
+	}{
+		{
+			name: "unique match is a single candidate",
+			ref:  NodeRef{Namespace: "other", Name: "api"},
+			want: []string{"apps/deployment/other/api"},
+		},
+		{
+			// Same name, same namespace, three kinds: the CLI must see all
+			// three so it can refuse to guess.
+			name: "ambiguous without a kind lists every match",
+			ref:  NodeRef{Namespace: "web", Name: "api"},
+			want: []string{"apps/deployment/web/api", "core/service/web/api", "networking.k8s.io/ingress/web/api"},
+		},
+		{
+			name: "kind hint narrows to one",
+			ref:  NodeRef{Namespace: "web", Name: "api", Kind: "services"},
+			want: []string{"core/service/web/api"},
+		},
+		{
+			// A hint that matches nothing must not silently widen back to
+			// "all of them" and must not silently pick one either — the
+			// caller needs to see the full set to explain the miss.
+			name: "useless kind hint keeps the full set",
+			ref:  NodeRef{Namespace: "web", Name: "api", Kind: "widgets"},
+			want: []string{"apps/deployment/web/api", "core/service/web/api", "networking.k8s.io/ingress/web/api"},
+		},
+		{
+			name: "no namespace matches across namespaces",
+			ref:  NodeRef{Name: "api", Kind: "deployments"},
+			want: []string{"apps/deployment/web/api", "apps/deployment/other/api"},
+		},
+		{name: "unknown name is empty", ref: NodeRef{Name: "ghost"}, want: nil},
+		{name: "empty name is empty", ref: NodeRef{Namespace: "web"}, want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveCandidates(focusNodes(), tt.ref)
+			var ids []string
+			for _, n := range got {
+				ids = append(ids, n.ID)
+			}
+			if len(ids) != len(tt.want) {
+				t.Fatalf("got %v, want %v", ids, tt.want)
+			}
+			for i := range ids {
+				if ids[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", ids, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestPluralize(t *testing.T) {
 	cases := map[string]string{
 		"deployment":    "deployments",

@@ -59,6 +59,44 @@ func ResolveNode(nodes []Node, ref NodeRef) (string, bool) {
 	return matches[0].ID, true
 }
 
+// ResolveCandidates returns every node a reference could mean, in snapshot
+// order. It exists for callers that must not guess: ResolveNode picks the
+// first match when a name is ambiguous, which is right for the k9s handoff
+// (any landing spot beats none) and wrong for an agent, which would act on
+// the wrong resource with no signal that it had.
+//
+// Name must match exactly and namespace must match when supplied. A kind
+// hint narrows the set only if it matches at least one candidate; a hint
+// that matches none is ignored so the caller still sees the full set.
+func ResolveCandidates(nodes []Node, ref NodeRef) []Node {
+	if ref.Name == "" {
+		return nil
+	}
+	var matches []Node
+	for _, n := range nodes {
+		if n.Name != ref.Name {
+			continue
+		}
+		if ref.Namespace != "" && n.Namespace != ref.Namespace {
+			continue
+		}
+		matches = append(matches, n)
+	}
+	if ref.Kind == "" {
+		return matches
+	}
+	var narrowed []Node
+	for _, n := range matches {
+		if kindMatches(n.Kind, ref.Kind) {
+			narrowed = append(narrowed, n)
+		}
+	}
+	if len(narrowed) == 0 {
+		return matches
+	}
+	return narrowed
+}
+
 // kindMatches compares a node's Kind against a hint that may be either the
 // Kind itself or the plural resource name.
 func kindMatches(kind, hint string) bool {
