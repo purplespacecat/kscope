@@ -309,6 +309,10 @@ func wiredFleet() *fixture {
 		f.edge(EdgeSelects, fxSvc, "core/pod/app/web-abc-"+p)
 	}
 	f.edge(EdgeManagedBy, fxSvc, "kustomize.toolkit.fluxcd.io/kustomization/flux-system/infra")
+	// The Secret is reached from the pods via outgoing mounts; its own
+	// managed-by edge is a second hop on the outgoing side and must never
+	// render, mirroring the Service's trap on the incoming side.
+	f.edge(EdgeManagedBy, fxSecret, "kustomize.toolkit.fluxcd.io/kustomization/flux-system/infra")
 	return f
 }
 
@@ -347,10 +351,14 @@ func TestNeighbourhood_GroupEdgesAreAUnion(t *testing.T) {
 }
 
 func TestNeighbourhood_EdgesAreOneHop(t *testing.T) {
-	// The Service is reached as a peer of the pods; its own managed-by edge
-	// is a second hop and stays out.
+	// The Service (incoming) and the Secret (outgoing) are both reached as
+	// peers of the pods; each has its own managed-by edge, which is a second
+	// hop and must stay out regardless of which direction reached the peer.
 	text := render(t, wiredFleet(), fxDeploy, ViewOptions{Depth: 2})
 	lineWith(t, text, "← selects Service web")
+	// Guard against the trap going vacuous: the outgoing-reached peer must
+	// actually be present, or the absence check below proves nothing.
+	lineWith(t, text, "mounts → Secret db-creds")
 	if strings.Contains(text, "managed-by") || strings.Contains(text, "Kustomization infra") {
 		t.Fatalf("second hop leaked:\n%s", text)
 	}
