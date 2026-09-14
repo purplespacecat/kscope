@@ -47,6 +47,12 @@ type Node struct {
 	ParentID   string            `json:"parentId,omitempty"` // "" only for the cluster root
 	Labels     map[string]string `json:"labels,omitempty"`
 	Health     Health            `json:"health"`
+	// Reason is the short status word behind a non-healthy Health, when the
+	// source object has one — a container waiting reason such as
+	// CrashLoopBackOff or ImagePullBackOff. Empty for healthy nodes and for
+	// kinds whose health has no single reason. Old snapshots lack it and
+	// decode unchanged.
+	Reason    string `json:"reason,omitempty"`
 	// Synthetic marks logical nodes with no direct API object behind them
 	// (the cluster root, and control-plane components on k3s where the whole
 	// plane is one process). Rendered dashed in the UI.
