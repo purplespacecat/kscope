@@ -21,9 +21,10 @@ const (
 )
 
 var (
-	ErrDepth   = errors.New("graph: depth must be between 1 and 3")
-	ErrBudget  = errors.New("graph: budget must be at least 1024 bytes")
-	ErrNoFocus = errors.New("graph: focus node not in snapshot")
+	ErrDepth    = errors.New("graph: depth must be between 1 and 3")
+	ErrBudget   = errors.New("graph: budget must be at least 1024 bytes")
+	ErrNoFocus  = errors.New("graph: focus node not in snapshot")
+	ErrSkeleton = errors.New("graph: budget too small for the focus and its ancestors")
 )
 
 // ViewOptions bounds a projection. Zero values mean the defaults.
@@ -168,6 +169,9 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	if budget < MinBudget {
 		return Rendered{}, ErrBudget
 	}
+	if opts.Reserve < 0 || budget-opts.Reserve < MinBudget {
+		return Rendered{}, ErrBudget
+	}
 
 	v := &view{byID: make(map[string]Node, len(snap.Nodes)), children: map[string][]Node{}, depth: depth}
 	for _, n := range snap.Nodes {
@@ -258,7 +262,13 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 		}
 		n, e, ok := dropOne(&kids, func(r *row) bool { return r.kind == rowNode || r.kind == rowGroup })
 		if !ok {
-			break // skeleton only; MinBudget guarantees it fits
+			// Nothing left but the skeleton (ancestors, focus, kubectl), and
+			// it is reserved — it can never be truncated. If it still does
+			// not fit, that is a real error, not silent oversize output.
+			if v.sb.Len()+opts.Reserve > budget {
+				return Rendered{}, ErrSkeleton
+			}
+			break
 		}
 		omittedN += n
 		omittedE += e

@@ -164,6 +164,32 @@ func TestNeighbourhood_NeverPrintsIDs(t *testing.T) {
 	}
 }
 
+// longChainFixture: a five-deep chain (Cluster → ns → Deployment →
+// ReplicaSet → Pod) built from unrealistically long names, so the
+// "skeleton" (ancestors + focus + kubectl) alone can exceed even a generous
+// budget. The focus (the Pod) carries a GitOps ref and a long Kubectl
+// string, both of which only ever render on the focus line.
+func longChainFixture() *fixture {
+	longNS := strings.Repeat("n", 63)
+	longDep := strings.Repeat("d", 250)
+	longRS := strings.Repeat("r", 250)
+	longPod := strings.Repeat("p", 250)
+	nsID := "core/namespace/" + longNS
+	depID := "apps/deployment/" + longNS + "/" + longDep
+	rsID := "apps/replicaset/" + longNS + "/" + longRS
+	podID := "core/pod/" + longNS + "/" + longPod
+
+	f := &fixture{}
+	f.add(Node{ID: fxCluster, Kind: "Cluster", Name: "dev/ci1"})
+	f.add(Node{ID: nsID, Kind: "Namespace", Name: longNS, ParentID: fxCluster})
+	f.add(Node{ID: depID, Kind: "Deployment", Name: longDep, Namespace: longNS, ParentID: nsID})
+	f.add(Node{ID: rsID, Kind: "ReplicaSet", Name: longRS, Namespace: longNS, ParentID: depID})
+	f.add(Node{ID: podID, Kind: "Pod", Name: longPod, Namespace: longNS, ParentID: rsID,
+		Kubectl: "kubectl --context dev/ci1 -n " + longNS + " get pod " + longPod + " -o yaml " + strings.Repeat("x", 300),
+		GitOps:  &GitOpsRef{Tool: "flux", Kind: "Kustomization", Name: "infra", Namespace: "flux-system"}})
+	return f
+}
+
 func TestNeighbourhood_Errors(t *testing.T) {
 	f := deployFixture()
 	if _, err := Neighbourhood(f.snap(), "nope", ViewOptions{}); !errors.Is(err, ErrNoFocus) {
@@ -174,6 +200,21 @@ func TestNeighbourhood_Errors(t *testing.T) {
 	}
 	if _, err := Neighbourhood(f.snap(), fxDeploy, ViewOptions{Budget: 1023}); !errors.Is(err, ErrBudget) {
 		t.Fatalf("budget 1023: err = %v, want ErrBudget", err)
+	}
+	if _, err := Neighbourhood(f.snap(), fxDeploy, ViewOptions{Reserve: -1}); !errors.Is(err, ErrBudget) {
+		t.Fatalf("negative reserve: err = %v, want ErrBudget", err)
+	}
+	if _, err := Neighbourhood(f.snap(), fxDeploy, ViewOptions{Budget: MinBudget, Reserve: 600}); !errors.Is(err, ErrBudget) {
+		t.Fatalf("reserve leaves less than MinBudget: err = %v, want ErrBudget", err)
+	}
+
+	long := longChainFixture()
+	podID := "core/pod/" + strings.Repeat("n", 63) + "/" + strings.Repeat("p", 250)
+	if _, err := Neighbourhood(long.snap(), podID, ViewOptions{Budget: 1 << 20}); err != nil {
+		t.Fatalf("long chain at a generous budget: unexpected err = %v", err)
+	}
+	if _, err := Neighbourhood(long.snap(), podID, ViewOptions{Budget: MinBudget, Reserve: 0}); !errors.Is(err, ErrSkeleton) {
+		t.Fatalf("long chain at MinBudget: err = %v, want ErrSkeleton", err)
 	}
 }
 
