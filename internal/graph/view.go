@@ -144,6 +144,8 @@ func healthText(n Node, focus bool) string {
 type view struct {
 	byID     map[string]Node
 	children map[string][]Node
+	outgoing map[string][]Edge // by Source
+	incoming map[string][]Edge // by Target
 	depth    int
 	sb       strings.Builder
 }
@@ -187,6 +189,11 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 			return cs[i].Name < cs[j].Name
 		})
 	}
+	v.outgoing, v.incoming = map[string][]Edge{}, map[string][]Edge{}
+	for _, e := range snap.Edges {
+		v.outgoing[e.Source] = append(v.outgoing[e.Source], e)
+		v.incoming[e.Target] = append(v.incoming[e.Target], e)
+	}
 
 	// Ancestors, root first. Always complete: orientation is not what
 	// --depth trades away. The length guard makes a malformed parent cycle
@@ -227,6 +234,7 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 		kids = append(kids, &row{kind: rowKubectl, label: focus.Kubectl, level: 0})
 	}
 	kids = append(kids, v.build(focus.ID, 1)...)
+	kids = append(kids, v.edgeRows([]string{focus.ID}, 0, focus.Health)...)
 	v.emit(kids, childIndent)
 
 	return Rendered{Text: v.sb.String()}, nil
@@ -266,6 +274,7 @@ func (v *view) build(id string, level int) []*row {
 		for _, k := range members {
 			r := &row{kind: rowNode, label: nodeLabel(k), right: healthText(k, false), level: level, health: k.Health, name: k.Name, nodes: 1}
 			r.kids = v.build(k.ID, level+1)
+			r.kids = append(r.kids, v.edgeRows([]string{k.ID}, level, k.Health)...)
 			rows = append(rows, r)
 		}
 	}
@@ -305,7 +314,44 @@ func (v *view) groupRow(kind string, members []Node, level int) *row {
 	if rest := len(members) - len(shown); rest > 0 {
 		g.kids = append(g.kids, &row{kind: rowMore, label: "… +" + strconv.Itoa(rest) + " more", level: level, nodes: rest})
 	}
+	ids := make([]string, len(members))
+	for i, m := range members {
+		ids[i] = m.ID
+	}
+	g.kids = append(g.kids, v.edgeRows(ids, level, worst)...)
 	return g
+}
+
+// edgeRows renders one hop of wiring for the given owners, deduplicated on
+// (direction, kind, peer) so a group of forty-seven pods mounting one Secret
+// is one line. Peers are leaves: nothing is walked from them. Edges whose
+// peer is missing from the snapshot are skipped rather than named.
+func (v *view) edgeRows(owners []string, level int, ownerHealth Health) []*row {
+	seen := map[string]bool{}
+	var rows []*row
+	for _, id := range owners {
+		for _, e := range v.outgoing[id] {
+			peer, ok := v.byID[e.Target]
+			if !ok || seen["out|"+e.Kind+"|"+e.Target] {
+				continue
+			}
+			seen["out|"+e.Kind+"|"+e.Target] = true
+			label := e.Kind + " → " + nodeLabel(peer)
+			rows = append(rows, &row{kind: rowEdge, label: label, level: level, health: ownerHealth, name: "0" + label})
+		}
+		for _, e := range v.incoming[id] {
+			peer, ok := v.byID[e.Source]
+			if !ok || seen["in|"+e.Kind+"|"+e.Source] {
+				continue
+			}
+			seen["in|"+e.Kind+"|"+e.Source] = true
+			label := "← " + e.Kind + " " + nodeLabel(peer)
+			rows = append(rows, &row{kind: rowEdge, label: label, level: level, health: ownerHealth, name: "1" + label})
+		}
+	}
+	// name carries a direction prefix so one sort puts outgoing first.
+	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
+	return rows
 }
 
 // emit writes rows at indent, choosing ├─/└─ by position. Kubectl rows are

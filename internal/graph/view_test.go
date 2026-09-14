@@ -295,3 +295,83 @@ func TestNeighbourhood_NamespacesNeverGroupEvenAsLeaves(t *testing.T) {
 		t.Fatalf("namespaces must never group, even when they are leaves:\n%s", text)
 	}
 }
+
+// wired adds the Secret every pod in fleetFixture mounts, plus a Service
+// selecting them and a Kustomization managing the Service — the second hop
+// that must NOT appear.
+func wiredFleet() *fixture {
+	f := fleetFixture()
+	f.add(Node{ID: fxSecret, Kind: "Secret", Name: "db-creds", Namespace: "app", ParentID: fxNS})
+	f.add(Node{ID: fxSvc, Kind: "Service", Name: "web", Namespace: "app", ParentID: fxNS})
+	f.add(Node{ID: "kustomize.toolkit.fluxcd.io/kustomization/flux-system/infra", Kind: "Kustomization", Name: "infra", Namespace: "flux-system", ParentID: fxNS})
+	for _, p := range []string{"err", "warn", "a", "b", "c"} {
+		f.edge(EdgeMounts, "core/pod/app/web-abc-"+p, fxSecret)
+		f.edge(EdgeSelects, fxSvc, "core/pod/app/web-abc-"+p)
+	}
+	f.edge(EdgeManagedBy, fxSvc, "kustomize.toolkit.fluxcd.io/kustomization/flux-system/infra")
+	return f
+}
+
+func TestNeighbourhood_EdgesBothDirections(t *testing.T) {
+	// Two ungrouped pods: each renders its own edges, so both directions
+	// appear once per pod.
+	text := render(t, deployFixture(), fxDeploy, ViewOptions{Depth: 2})
+	if n := strings.Count(text, "mounts → Secret db-creds"); n != 2 {
+		t.Fatalf("expected the mounts edge under each of 2 pods, got %d:\n%s", n, text)
+	}
+	if n := strings.Count(text, "uses → ServiceAccount runner"); n != 2 {
+		t.Fatalf("expected the uses edge under each of 2 pods, got %d:\n%s", n, text)
+	}
+	if n := strings.Count(text, "← selects Service web"); n != 2 {
+		t.Fatalf("expected the incoming selects edge under each of 2 pods, got %d:\n%s", n, text)
+	}
+	if strings.Contains(text, "selected by") {
+		t.Fatalf("no inverse labels — the arrow carries direction:\n%s", text)
+	}
+}
+
+func TestNeighbourhood_GroupEdgesAreAUnion(t *testing.T) {
+	text := render(t, wiredFleet(), fxDeploy, ViewOptions{Depth: 2})
+	if n := strings.Count(text, "mounts → Secret db-creds"); n != 1 {
+		t.Fatalf("five pods mounting one Secret must render once under the group, got %d:\n%s", n, text)
+	}
+	if n := strings.Count(text, "← selects Service web"); n != 1 {
+		t.Fatalf("incoming edges are unioned too, got %d:\n%s", n, text)
+	}
+	// Edges hang under the group, after its members and the "more" row.
+	more := strings.Index(text, "… +2 more")
+	mounts := strings.Index(text, "mounts → Secret")
+	if !(more < mounts) {
+		t.Fatalf("group edges must follow the member rows:\n%s", text)
+	}
+}
+
+func TestNeighbourhood_EdgesAreOneHop(t *testing.T) {
+	// The Service is reached as a peer of the pods; its own managed-by edge
+	// is a second hop and stays out.
+	text := render(t, wiredFleet(), fxDeploy, ViewOptions{Depth: 2})
+	lineWith(t, text, "← selects Service web")
+	if strings.Contains(text, "managed-by") || strings.Contains(text, "Kustomization infra") {
+		t.Fatalf("second hop leaked:\n%s", text)
+	}
+}
+
+func TestNeighbourhood_EdgesRespectDepth(t *testing.T) {
+	// At depth 1 the pods are not in the set, so their wiring is not either;
+	// the Deployment itself has no edges, so no arrows at all.
+	text := render(t, deployFixture(), fxDeploy, ViewOptions{Depth: 1})
+	if strings.Contains(text, "→") || strings.Contains(text, "←") {
+		t.Fatalf("depth 1 must not pull in the pods' edges:\n%s", text)
+	}
+}
+
+func TestNeighbourhood_FocusEdgesFollowDescendants(t *testing.T) {
+	text := render(t, deployFixture(), fxPod1, ViewOptions{Depth: 1})
+	lineWith(t, text, "mounts → Secret db-creds")
+	lineWith(t, text, "uses → ServiceAccount runner")
+	lineWith(t, text, "← selects Service web")
+	// Outgoing before incoming.
+	if strings.Index(text, "mounts →") > strings.Index(text, "← selects") {
+		t.Fatalf("outgoing edges must precede incoming:\n%s", text)
+	}
+}
