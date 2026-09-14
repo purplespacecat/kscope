@@ -487,9 +487,9 @@ func TestNeighbourhood_TruncationOrderIsTotal(t *testing.T) {
 func TestNeighbourhood_GroupsShrinkBeforeAnythingIsOmitted(t *testing.T) {
 	// Sweep budgets downward over a fixture whose 30 ReplicaSets each own
 	// three pods, so thirty "Pods (3)" groups exist. Invariants of the step
-	// order: while any member of the d-ma group is still shown, nothing has
-	// been omitted (step 1 costs no nodes); and a member never outlives its
-	// header.
+	// order: while any member of the d-ma group is still shown, nothing —
+	// no node and no edge — has been omitted (step 1 costs no nodes); and a
+	// member never outlives its header.
 	snap := wideFixture().snap()
 	full, err := Neighbourhood(snap, fxNS, ViewOptions{Depth: 3, Budget: 1 << 20})
 	if err != nil {
@@ -501,10 +501,14 @@ func TestNeighbourhood_GroupsShrinkBeforeAnythingIsOmitted(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		member := strings.Contains(r.Text, "d-ma-rs-1")
+		// A connector immediately before the bare name is a real member row;
+		// plain substring containment also matches the Secret's own incoming
+		// "← mounts Pod d-ma-rs-1" edge line (rendered elsewhere in the tree),
+		// which would falsely count as the member still being shown.
+		member := strings.Contains(r.Text, "├─ d-ma-rs-1") || strings.Contains(r.Text, "└─ d-ma-rs-1")
 		header := strings.Contains(r.Text, "Pods (3)")
-		if member && r.OmittedNodes > 0 {
-			t.Fatalf("budget %d: members shown yet nodes omitted — groups did not shrink first:\n%s", budget, r.Text)
+		if member && (r.OmittedNodes > 0 || r.OmittedEdges > 0) {
+			t.Fatalf("budget %d: members shown yet rows omitted — groups did not shrink first:\n%s", budget, r.Text)
 		}
 		if member && !header {
 			t.Fatalf("budget %d: member without its header:\n%s", budget, r.Text)
