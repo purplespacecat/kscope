@@ -61,6 +61,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "run 'kscope --help' for usage")
 		return 1
 	}
+	// flag stops at the first positional, so without this check
+	// `kscope --context dev/ci1 oops --discover-namespaces=a` would ignore
+	// everything from "oops" on and start a listener an agent would wait on
+	// forever. info and find reject strays for the same reason (§3.1).
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "kscope: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintln(stderr, "run 'kscope --help' for usage")
+		return 1
+	}
 
 	// Must be set before any discovery runs — redaction happens at capture
 	// time, never retroactively.

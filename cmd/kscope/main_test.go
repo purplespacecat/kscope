@@ -75,3 +75,36 @@ func TestUnknownWordIsDispatchedToCLI(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }
+
+// flag stops parsing at the first positional. Ignoring what follows meant
+// `kscope --context dev/ci1 oops --discover-namespaces=a` silently dropped
+// the discovery flags and started the HTTP server instead — the hang the
+// subcommand dispatch of §3.1 exists to prevent.
+func TestStrayPositionalIsExitOneAndNeverStartsTheServer(t *testing.T) {
+	code, stdout, stderr := exec("--context", "dev/ci1", "oops", "--discover-namespaces=a")
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, `unexpected argument "oops"`) || !strings.Contains(stderr, "kscope --help") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+// ...and the flags-only form still reaches the server path. An unusable port
+// makes ListenAndServe fail immediately, so the test proves the path is
+// reached without leaving a listener behind.
+func TestFlagsOnlyStillReachesTheServer(t *testing.T) {
+	code, stdout, stderr := exec("--port", "999999", "--data-dir", t.TempDir())
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 (the listener must be the thing that failed)", code)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "999999") {
+		t.Fatalf("stderr should carry the listener error: %q", stderr)
+	}
+}
