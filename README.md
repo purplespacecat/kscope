@@ -147,7 +147,8 @@ wired to, and health with reasons — a few hundred bytes instead of the raw
 snapshot or a pile of `kubectl get -o yaml`. Output never exceeds `--budget`
 bytes (default 8192). Exit codes are part of the contract: `0` printed, `2`
 out of scope or ambiguous (stderr names the fix), `3` no snapshot yet, `1`
-error. See `docs/agent-cli.md`.
+error. `kscope --help` lists the subcommands on stdout and `kscope <cmd>
+--help` describes one's flags. See `docs/agent-cli.md`.
 
 Paste this into the `CLAUDE.md` of any repo where the agent should reach for it:
 
