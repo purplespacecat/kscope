@@ -3,6 +3,7 @@ package graph
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -561,4 +562,102 @@ func TestNeighbourhood_GroupsShrinkBeforeAnythingIsOmitted(t *testing.T) {
 	if !sawShrunk {
 		t.Fatal("sweep never observed a shrunk group; fixture or budgets need adjusting")
 	}
+}
+
+// TestNeighbourhood_TruncationAccountingMatchesTheRender guards the running
+// byte total the truncation loop keeps instead of re-rendering after every
+// removal. Two ways it could drift from reality, both caught here across a
+// fine budget sweep: the total under-counts, so the output overshoots the
+// budget it promised; or the omission counters stop matching what was
+// actually dropped, so the marker lies about it.
+func TestNeighbourhood_TruncationAccountingMatchesTheRender(t *testing.T) {
+	snap := wideFixture().snap()
+	full, err := Neighbourhood(snap, fxNS, ViewOptions{Depth: 3, Budget: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const reserve = 155 // a footer-sized tail, as kscope map passes
+	sawTruncation, sawWhole := false, false
+	for budget := len(full.Text) + 64; budget >= MinBudget+reserve; budget -= 13 {
+		r, err := Neighbourhood(snap, fxNS, ViewOptions{Depth: 3, Budget: budget, Reserve: reserve})
+		if err != nil {
+			t.Fatalf("budget %d: %v", budget, err)
+		}
+		if len(r.Text)+reserve > budget {
+			t.Fatalf("budget %d: output is %d bytes plus %d reserved", budget, len(r.Text), reserve)
+		}
+		marker := fmt.Sprintf("… truncated: %d nodes, %d edges omitted", r.OmittedNodes, r.OmittedEdges)
+		if r.OmittedNodes == 0 && r.OmittedEdges == 0 {
+			sawWhole = true
+			if strings.Contains(r.Text, "truncated:") {
+				t.Fatalf("budget %d: marker printed with nothing omitted:\n%s", budget, r.Text)
+			}
+			continue
+		}
+		sawTruncation = true
+		last := strings.TrimRight(r.Text, "\n")
+		last = last[strings.LastIndex(last, "\n")+1:]
+		if !strings.HasSuffix(last, marker) {
+			t.Fatalf("budget %d: last line %q does not report %q", budget, last, marker)
+		}
+		if n := strings.Count(r.Text, "truncated:"); n != 1 {
+			t.Fatalf("budget %d: %d truncation markers", budget, n)
+		}
+	}
+	if !sawTruncation || !sawWhole {
+		t.Fatalf("sweep needs both cases: truncated=%v whole=%v", sawTruncation, sawWhole)
+	}
+}
+
+// BenchmarkNeighbourhood_Truncation is the shape the truncation loop has to
+// keep: a wide focus (the cluster root, which is what an agent reads out of
+// `kscope info` and maps next) at the default budget, so nearly every row is
+// removed. Re-rendering per removal made this quadratic — 24s at 11,761
+// nodes. Run with -benchtime 1x over the sizes to see the curve.
+func BenchmarkNeighbourhood_Truncation(b *testing.B) {
+	for _, size := range []int{1471, 2941, 5881, 11761} {
+		snap := benchFixture(size)
+		b.Run(strconv.Itoa(len(snap.Nodes))+"nodes", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				if _, err := Neighbourhood(snap, "cluster", ViewOptions{Depth: 3, Budget: DefaultBudget}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// benchFixture is an all-namespaces snapshot of about `total` nodes:
+// cluster → namespaces → Deployments → ReplicaSets → Pods, every Pod mounting
+// one shared Secret. Deployments own a ReplicaSet, so they are not leaves and
+// never group — the row count grows with the snapshot, which is the case
+// truncation has to survive.
+func benchFixture(total int) Snapshot {
+	f := &fixture{}
+	f.add(Node{ID: "cluster", Kind: "Cluster", Name: "dev/ci1", Kubectl: "kubectl cluster-info"})
+	f.add(Node{ID: fxSecret, Kind: "Secret", Name: "db-creds", Namespace: "infra", ParentID: "cluster"})
+	for i, count := 0, 2; count < total; i++ {
+		ns := "ns-" + strconv.Itoa(i)
+		nsID := "core/namespace/" + ns
+		f.add(Node{ID: nsID, Kind: "Namespace", Name: ns, ParentID: "cluster"})
+		count++
+		for j := 0; j < 5 && count < total; j++ {
+			name := fmt.Sprintf("app-%d-%d", i, j)
+			dep, rs := "apps/deployment/"+ns+"/"+name, "apps/replicaset/"+ns+"/"+name
+			h := HealthHealthy
+			if j == 2 {
+				h = HealthError
+			}
+			f.add(Node{ID: dep, Kind: "Deployment", Name: name, Namespace: ns, ParentID: nsID, Health: h})
+			f.add(Node{ID: rs, Kind: "ReplicaSet", Name: name + "-rs", Namespace: ns, ParentID: dep, Health: h})
+			count += 2
+			for p := 0; p < 3 && count < total; p++ {
+				pod := "core/pod/" + ns + "/" + name + "-" + strconv.Itoa(p)
+				f.add(Node{ID: pod, Kind: "Pod", Name: name + "-" + strconv.Itoa(p), Namespace: ns, ParentID: rs, Health: h})
+				f.edge(EdgeMounts, pod, fxSecret)
+				count++
+			}
+		}
+	}
+	return f.snap()
 }

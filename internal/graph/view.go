@@ -63,6 +63,8 @@ type row struct {
 	health Health
 	name   string // sort key within a level
 	nodes  int    // snapshot nodes this row stands for (group: its total)
+	bytes  int    // rendered length of this line alone, set by measure
+	dead   bool   // removed by truncation; pruned before the single render
 	kids   []*row
 }
 
@@ -246,87 +248,212 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	kids = append(kids, v.edgeRows([]string{focus.ID}, 0, focus.Health)...)
 
 	skeleton := v.sb.String() // ancestors + focus line, already written
-	omittedN, omittedE := 0, 0
-	for {
-		v.sb.Reset()
-		v.sb.WriteString(skeleton)
-		v.emit(kids, childIndent)
-		if omittedN > 0 || omittedE > 0 {
-			v.sb.WriteString(childIndent + "… truncated: " + strconv.Itoa(omittedN) + " nodes, " + strconv.Itoa(omittedE) + " edges omitted\n")
-		}
-		if v.sb.Len()+opts.Reserve <= budget {
-			break
-		}
-		if shrinkGroup(&kids) {
-			continue
-		}
-		if _, e, ok := dropOne(&kids, func(r *row) bool { return r.kind == rowEdge }); ok {
-			omittedE += e
-			continue
-		}
-		n, e, ok := dropOne(&kids, func(r *row) bool { return r.kind == rowNode || r.kind == rowGroup })
-		if !ok {
-			// Nothing left but the skeleton (ancestors, focus, kubectl), and
-			// it is reserved — it can never be truncated. If it still does
-			// not fit, that is a real error, not silent oversize output.
-			if v.sb.Len()+opts.Reserve > budget {
-				return Rendered{}, ErrSkeleton
-			}
-			break
-		}
-		omittedN += n
-		omittedE += e
+
+	// Truncation removes rows in the total order of §4.3 — group members,
+	// then edges, then nodes and groups — and needs to know, after each
+	// removal, whether what is left fits. Re-rendering to find that out is
+	// quadratic (every removal re-emits the whole surviving tree), and a
+	// wide focus on an all-namespaces snapshot has thousands of rows. So
+	// measure every row once, keep a running total, and render exactly once
+	// at the end.
+	measure(kids, len(childIndent))
+	total := len(skeleton)
+	for _, r := range kids {
+		total += liveBytes(r)
 	}
+
+	// Each step's candidates are collected and ordered once rather than per
+	// removal. That is the same sequence the repeated pick produced: the
+	// steps run strictly one after another (a later step never puts a row
+	// back into an earlier step's pool), removal never reorders the rows it
+	// leaves behind, and step 3's deepest-first rule means a row's
+	// descendants are always removed before the row itself.
+	var groups, edges, nodes []*row
+	collectRemovable(kids, &groups, &edges, &nodes)
+	sortRemovals(groups)
+	sortRemovals(edges)
+	sortRemovals(nodes)
+
+	omittedN, omittedE := 0, 0
+	marker := ""
+	gi, ei, ni := 0, 0, 0
+	for total+len(marker)+opts.Reserve > budget {
+		// 1. Empty one group's member and "more" rows, keeping its edges.
+		//    Costs no omissions: the header still states the full count.
+		if gi < len(groups) {
+			g := groups[gi]
+			gi++
+			var kept []*row
+			for _, k := range g.kids {
+				if k.kind == rowEdge {
+					kept = append(kept, k)
+					continue
+				}
+				total -= liveBytes(k)
+			}
+			g.kids = kept
+			continue
+		}
+		// 2. Drop one edge row.
+		if ei < len(edges) {
+			r := edges[ei]
+			ei++
+			if r.dead {
+				continue
+			}
+			b, _, e := kill(r)
+			total -= b
+			omittedE += e
+			marker = markerLine(childIndent, omittedN, omittedE)
+			continue
+		}
+		// 3. Drop one node or group, and whatever still hangs off it.
+		if ni < len(nodes) {
+			r := nodes[ni]
+			ni++
+			if r.dead {
+				continue
+			}
+			b, n, e := kill(r)
+			total -= b
+			omittedN += n
+			omittedE += e
+			marker = markerLine(childIndent, omittedN, omittedE)
+			continue
+		}
+		// Nothing left but the skeleton (ancestors, focus, kubectl), and it
+		// is reserved — it can never be truncated. It still does not fit, so
+		// that is a real error, not silent oversize output.
+		return Rendered{}, ErrSkeleton
+	}
+
+	v.sb.Reset()
+	v.sb.WriteString(skeleton)
+	prune(&kids)
+	v.emit(kids, childIndent)
+	v.sb.WriteString(marker)
 	return Rendered{Text: v.sb.String(), OmittedNodes: omittedN, OmittedEdges: omittedE}, nil
 }
 
-// subtreeCounts returns the snapshot nodes and edge rows a row stands for,
-// itself included, so a dropped subtree is reported exactly once.
-func subtreeCounts(r *row) (nodes, edges int) {
+// markerLine is the one line every omission is counted into.
+func markerLine(indent string, nodes, edges int) string {
+	return indent + "… truncated: " + strconv.Itoa(nodes) + " nodes, " + strconv.Itoa(edges) +
+		" edges omitted\n"
+}
+
+// measure records what each row costs when emitted at the given indent,
+// which is pure ASCII spaces so its byte and rune widths are equal. A row's
+// length does not change as its siblings are removed: ├─ and └─ are the same
+// width, and the padding before the right-hand column is computed from the
+// row's own runes. That invariant is what lets the loop above keep a running
+// total instead of re-rendering.
+func measure(rows []*row, indent int) {
+	for _, r := range rows {
+		if r.kind == rowKubectl {
+			r.bytes = indent + len(r.label) + 1 // no connector, then '\n'
+			continue
+		}
+		r.bytes = indent + len(connectorBytes) + len(r.label) + 1
+		if r.right != "" {
+			pad := glyphCol - (indent + connectorRunes + utf8.RuneCountInString(r.label))
+			if pad < 1 {
+				pad = 1
+			}
+			r.bytes += pad + len(r.right)
+		}
+		measure(r.kids, indent+len(indentStep))
+	}
+}
+
+// Both connectors are one width, so which one a row gets cannot change what
+// it costs. See emit.
+const (
+	connectorBytes = "├─ "
+	connectorRunes = 3
+)
+
+// liveBytes is what a row and everything still under it occupy.
+func liveBytes(r *row) int {
+	if r.dead {
+		return 0
+	}
+	n := r.bytes
+	for _, k := range r.kids {
+		n += liveBytes(k)
+	}
+	return n
+}
+
+// kill marks a row and everything still live beneath it as removed, and
+// returns the bytes that frees plus what it costs: the snapshot nodes and
+// the edge rows it stood for, each counted exactly once.
+func kill(r *row) (bytes, nodes, edges int) {
+	if r.dead {
+		return 0, 0, 0
+	}
+	r.dead = true
+	bytes = r.bytes
 	switch r.kind {
 	case rowNode, rowGroup:
-		nodes += r.nodes
+		nodes = r.nodes
 	case rowEdge:
-		edges++
+		edges = 1
 	}
 	for _, k := range r.kids {
-		n, e := subtreeCounts(k)
+		b, n, e := kill(k)
+		bytes += b
 		nodes += n
 		edges += e
 	}
-	return nodes, edges
+	return bytes, nodes, edges
 }
 
-// candidate is a removable row and where it lives, so removal is a slice
-// edit on its parent.
-type candidate struct {
-	parent *[]*row
-	idx    int
-	row    *row
+// prune drops the killed rows, so emit sees only survivors and picks the
+// last-child connector from them.
+func prune(rows *[]*row) {
+	kept := (*rows)[:0]
+	for _, r := range *rows {
+		if r.dead {
+			continue
+		}
+		prune(&r.kids)
+		kept = append(kept, r)
+	}
+	*rows = kept
 }
 
-// collect walks the tree for rows of the given kinds. Group members and
-// "more" rows are never candidates on their own — step 1 removes them as a
-// unit via their group.
-func collect(rows *[]*row, want func(*row) bool, out *[]candidate) {
-	for i, r := range *rows {
-		if want(r) {
-			*out = append(*out, candidate{parent: rows, idx: i, row: r})
+// collectRemovable gathers each step's candidates in one pre-order walk:
+// groups that still list members, every edge row, and every node and group.
+// Group members and "more" rows are never candidates on their own — step 1
+// removes them as a unit via their group.
+func collectRemovable(rows []*row, groups, edges, nodes *[]*row) {
+	for _, r := range rows {
+		switch r.kind {
+		case rowGroup:
+			for _, k := range r.kids {
+				if k.kind == rowMember || k.kind == rowMore {
+					*groups = append(*groups, r)
+					break
+				}
+			}
+			*nodes = append(*nodes, r)
+		case rowNode:
+			*nodes = append(*nodes, r)
+		case rowEdge:
+			*edges = append(*edges, r)
 		}
 		if r.kind == rowNode || r.kind == rowGroup {
-			collect(&r.kids, want, out)
+			collectRemovable(r.kids, groups, edges, nodes)
 		}
 	}
 }
 
-// pickFirst orders candidates deepest-level first, then healthy before
-// unhealthy, then by label, then by name — the total order of §4.3.
-func pickFirst(cs []candidate) *candidate {
-	if len(cs) == 0 {
-		return nil
-	}
-	sort.SliceStable(cs, func(i, j int) bool {
-		a, b := cs[i].row, cs[j].row
+// sortRemovals orders candidates deepest-level first, then healthy before
+// unhealthy, then by label, then by name — the total order of §4.3. The sort
+// is stable, so rows that tie on all four keys are removed in tree order.
+func sortRemovals(rows []*row) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
 		if a.level != b.level {
 			return a.level > b.level
 		}
@@ -338,55 +465,6 @@ func pickFirst(cs []candidate) *candidate {
 		}
 		return a.name < b.name
 	})
-	return &cs[0]
-}
-
-func remove(c *candidate) {
-	p := *c.parent
-	*c.parent = append(p[:c.idx:c.idx], p[c.idx+1:]...)
-}
-
-// shrinkGroup empties one group's member and "more" rows, keeping its edge
-// rows. Returns false when no group has anything left to shrink.
-func shrinkGroup(kids *[]*row) bool {
-	var cs []candidate
-	collect(kids, func(r *row) bool {
-		if r.kind != rowGroup {
-			return false
-		}
-		for _, k := range r.kids {
-			if k.kind == rowMember || k.kind == rowMore {
-				return true
-			}
-		}
-		return false
-	}, &cs)
-	c := pickFirst(cs)
-	if c == nil {
-		return false
-	}
-	var kept []*row
-	for _, k := range c.row.kids {
-		if k.kind == rowEdge {
-			kept = append(kept, k)
-		}
-	}
-	c.row.kids = kept
-	return true
-}
-
-// dropOne removes the first candidate of the given kinds and returns what
-// it cost.
-func dropOne(kids *[]*row, want func(*row) bool) (nodes, edges int, ok bool) {
-	var cs []candidate
-	collect(kids, want, &cs)
-	c := pickFirst(cs)
-	if c == nil {
-		return 0, 0, false
-	}
-	nodes, edges = subtreeCounts(c.row)
-	remove(c)
-	return nodes, edges, true
 }
 
 // build returns the rows for id's children at the given level, grouping
