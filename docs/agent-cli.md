@@ -276,7 +276,7 @@ nothing else in the codebase reads the field until the UI chooses to.
 | `kscope info` | data dir, cluster context and version, scope, age, node/edge counts, per-kind counts, discovery errors as a **count plus the five most frequent distinct messages** (ties by first occurrence) — never the raw list (§1: 1,160 entries) |
 | `kscope find` | one line per match (kind, name, namespace, health), plus the total. With no filters it lists the whole snapshot up to `--limit` (default 50), a cheap inventory. `--kind` accepts a Kind or its plural, as `ResolveNode` does. |
 | `kscope map` | the tree of §4.2 |
-| `kscope manifest` | redacted YAML from the existing sidecar store |
+| `kscope manifest` | redacted YAML from the existing sidecar store. **The one unbounded command**: it has no `--budget` and prints the stored YAML whole — a ConfigMap holding an embedded file can be megabytes. Truncating it is not an option (a cut-off manifest is still parseable YAML that reads as complete, which is exactly the "wrong answer with a success code" §2 rules out), so the bound is the caller's to apply |
 
 ### 5.1 Refresh reuses the one-shot path — and the one-shot path grows
 

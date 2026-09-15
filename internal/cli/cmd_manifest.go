@@ -12,7 +12,13 @@ const manifestSynopsis = `kscope manifest <name> [--namespace NS] [--kind K] [--
 
 Print one resource's redacted YAML as captured at discovery time. The
 staleness footer is appended as a YAML comment, so the output stays valid
-YAML when redirected. Exit 2 if the resource is synthetic or has no manifest.`
+YAML when redirected. Exit 2 if the resource is synthetic or has no manifest.
+
+Unlike map, this output is NOT bounded: there is no --budget, and the stored
+YAML is printed whole. A ConfigMap holding an embedded file can be megabytes.
+Truncating it would be worse — a cut-off manifest is not valid YAML and reads
+as a complete one — so bound it yourself if size matters: pipe through head,
+or use map when the question is about structure rather than field values.`
 
 func init() {
 	register(command{name: "manifest", summary: "print one resource's redacted YAML as captured at discovery time", synopsis: manifestSynopsis, run: runManifest})

@@ -144,8 +144,12 @@ whichever UI you open next.
 
 `kscope map` prints one resource's place in the containment tree, what it is
 wired to, and health with reasons — a few hundred bytes instead of the raw
-snapshot or a pile of `kubectl get -o yaml`. Output never exceeds `--budget`
-bytes (default 8192). Exit codes are part of the contract: `0` printed, `2`
+snapshot or a pile of `kubectl get -o yaml`. Its output never exceeds
+`--budget` bytes (default 8192); `kscope find` and `kscope info` are short by
+construction. `kscope manifest` is the exception and is **not** bounded — it
+prints the stored YAML whole, which for a ConfigMap holding an embedded file
+can be megabytes, so bound it yourself if that matters. Exit codes are part of
+the contract: `0` printed, `2`
 out of scope or ambiguous (stderr names the fix), `3` no snapshot yet, `1`
 error. `kscope --help` lists the subcommands on stdout and `kscope <cmd>
 --help` describes one's flags. See `docs/agent-cli.md`.
