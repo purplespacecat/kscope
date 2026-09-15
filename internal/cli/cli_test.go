@@ -601,3 +601,46 @@ func TestMap_SkeletonTooLargeForBudgetIsExit1(t *testing.T) {
 		t.Fatalf("stderr must name the error: %q", b.err.String())
 	}
 }
+
+func TestManifest_PrintsYAMLWithCommentFooter(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(1))
+	var b bufs
+	if code := Run([]string{"manifest", "web", "--kind", "deployment", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	out := b.out.String()
+	if !strings.HasPrefix(out, "apiVersion: apps/v1\nkind: Deployment\n") {
+		t.Fatalf("expected the stored YAML first:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "# snapshot 4h12m old · context=dev/ci1 · ns=[app] · data="+dir+"\n") {
+		t.Fatalf("footer must be a trailing YAML comment:\n%s", out)
+	}
+}
+
+func TestManifest_SyntheticNodeIsExit2(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(1))
+	var b bufs
+	if code := Run([]string{"manifest", "dev/ci1", "--kind", "cluster", "--data-dir", dir}, b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d: %s", code, ExitMiss, b.err.String())
+	}
+	if b.out.Len() != 0 || !strings.Contains(b.err.String(), "synthetic") {
+		t.Fatalf("stdout=%q stderr=%q", b.out.String(), b.err.String())
+	}
+}
+
+func TestManifest_MissingManifestIsExit2(t *testing.T) {
+	// The Service exists in the graph but has no captured manifest (a
+	// pre-M2 snapshot, or a kind discovery does not capture).
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(1))
+	var b bufs
+	if code := Run([]string{"manifest", "web", "--kind", "service", "--data-dir", dir}, b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d: %s", code, ExitMiss, b.err.String())
+	}
+	if !strings.Contains(b.err.String(), "no manifest") || !strings.Contains(b.err.String(), "--discover-namespaces=app") {
+		t.Fatalf("stderr must explain and name the refresh: %q", b.err.String())
+	}
+}
