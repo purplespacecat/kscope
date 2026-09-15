@@ -105,6 +105,11 @@ func kindMatches(kind, hint string) bool {
 	return k == h || pluralize(k) == h
 }
 
+// KindMatches reports whether hint names kind, as a Kind ("Deployment") or a
+// plural resource ("deployments"). Exported for the CLI's --kind filter so
+// it accepts the same forms the k9s handoff does.
+func KindMatches(kind, hint string) bool { return kindMatches(kind, hint) }
+
 // pluralize applies the same rules the Kubernetes API machinery uses to derive
 // a resource name from a kind: "deployment" → "deployments", "ingress" →
 // "ingresses", "networkpolicy" → "networkpolicies".

@@ -158,8 +158,21 @@ func loadSnapshot(dataDir string, io IO) (graph.Snapshot, *graph.Store, int) {
 // footer is the staleness contract: every read command ends with it, so an
 // agent always knows how old the data is and which cluster it describes.
 func footer(snap graph.Snapshot, dataDir string) string {
-	return "snapshot " + humanAge(now().Sub(snap.Timestamp)) + " old · context=" + snap.Scope.Context +
+	return "snapshot " + humanAge(now().Sub(snap.Timestamp)) + " old · context=" + snapshotContext(snap) +
 		" · ns=" + nsList(snap.Scope) + " · data=" + dataDir + "\n"
+}
+
+// snapshotContext is the context a snapshot is reported under. Scope.Context
+// records what discovery was *asked for* — it is empty whenever --context
+// was not passed, meaning "whatever the kubeconfig's current-context is".
+// Cluster.Context records what was *reached*: it is always populated with
+// the resolved name, so it is what every human- and agent-facing message
+// should show.
+func snapshotContext(snap graph.Snapshot) string {
+	if snap.Cluster.Context != "" {
+		return snap.Cluster.Context
+	}
+	return snap.Scope.Context
 }
 
 func nsList(scope graph.Scope) string {
@@ -186,4 +199,48 @@ func humanAge(d time.Duration) string {
 		h := int(d.Hours()) - days*24
 		return strconv.Itoa(days) + "d" + strconv.Itoa(h) + "h"
 	}
+}
+
+// refreshHint is the exact one-shot command that widens the snapshot to
+// include extraNS — echoing the snapshot's own context, data dir and include
+// flags so following it can never refresh a different cluster or silently
+// change scope (spec §5.2).
+func refreshHint(snap graph.Snapshot, dataDir, extraNS string) string {
+	var sb strings.Builder
+	sb.WriteString("  kscope --context " + snapshotContext(snap) + " --data-dir " + dataDir + " \\\n")
+	if len(snap.Scope.Namespaces) == 0 {
+		sb.WriteString("         --discover-all-namespaces \\\n")
+	} else {
+		ns := append([]string(nil), snap.Scope.Namespaces...)
+		if extraNS != "" && !containsString(ns, extraNS) {
+			ns = append(ns, extraNS)
+		}
+		sb.WriteString("         --discover-namespaces=" + strings.Join(ns, ",") + " \\\n")
+	}
+	sb.WriteString("         --include-infra=" + strconv.FormatBool(snap.Scope.IncludeInfra) +
+		" --include-crds=" + strconv.FormatBool(snap.Scope.IncludeCRDs) + "\n")
+	return sb.String()
+}
+
+func containsString(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+// missMessage explains a miss the way an agent can act on: what was asked,
+// what the snapshot covers, and the command that would widen it.
+func missMessage(what string, snap graph.Snapshot, dataDir, extraNS string) string {
+	var sb strings.Builder
+	sb.WriteString("No resource matching " + what + ".\n\n")
+	if len(snap.Scope.Namespaces) == 0 {
+		sb.WriteString("Snapshot covers all namespaces, context=" + snapshotContext(snap) + " (" + humanAge(now().Sub(snap.Timestamp)) + " old); the resource may be newer than the snapshot. To refresh:\n")
+	} else {
+		sb.WriteString("Snapshot scope is context=" + snapshotContext(snap) + " ns=" + nsList(snap.Scope) + " (" + humanAge(now().Sub(snap.Timestamp)) + " old);\nthe resource may exist but be out of scope. To include it:\n")
+	}
+	sb.WriteString(refreshHint(snap, dataDir, extraNS))
+	return sb.String()
 }

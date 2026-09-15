@@ -121,6 +121,10 @@ func healthGlyph(h Health) string {
 	}
 }
 
+// HealthGlyph is the one-rune health marker the projection uses; exported so
+// list output uses the same vocabulary.
+func HealthGlyph(h Health) string { return healthGlyph(h) }
+
 // nodeLabel is the only naming an agent sees: kind and name, never the ID.
 func nodeLabel(n Node) string {
 	if n.Kind == "Namespace" {

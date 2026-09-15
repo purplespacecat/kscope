@@ -123,6 +123,23 @@ func TestFooter(t *testing.T) {
 	}
 }
 
+func TestFooter_FallsBackToClusterContext(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	// Scope.Context is empty whenever discovery ran against the kubeconfig's
+	// current-context (no --context passed); Cluster.Context always holds the
+	// resolved name and must be what the footer shows.
+	snap := graph.Snapshot{
+		Timestamp: time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC),
+		Scope:     graph.Scope{Namespaces: []string{"app", "ops"}},
+		Cluster:   graph.ClusterMeta{Context: "dev/ci1"},
+	}
+	got := footer(snap, "/data")
+	want := "snapshot 4h12m old · context=dev/ci1 · ns=[app,ops] · data=/data\n"
+	if got != want {
+		t.Fatalf("footer = %q, want %q", got, want)
+	}
+}
+
 func infoSnapshot() graph.Snapshot {
 	errs := []string{}
 	for i := 0; i < 700; i++ {
@@ -199,5 +216,116 @@ func TestInfo_SummarisesErrorsInsteadOfListingThem(t *testing.T) {
 	}
 	if b.err.Len() != 0 {
 		t.Fatalf("stderr must be empty on success: %q", b.err.String())
+	}
+}
+
+func findSnapshot() graph.Snapshot {
+	return graph.Snapshot{
+		Timestamp: time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC),
+		Scope:     graph.Scope{Context: "dev/ci1", Namespaces: []string{"app"}, IncludeInfra: true, IncludeCRDs: false},
+		Cluster:   graph.ClusterMeta{Context: "dev/ci1"},
+		Nodes: []graph.Node{
+			{ID: "cluster", Kind: "Cluster", Name: "dev/ci1", Health: graph.HealthHealthy},
+			{ID: "core/namespace/app", Kind: "Namespace", Name: "app", Health: graph.HealthHealthy},
+			{ID: "apps/deployment/app/web", Kind: "Deployment", Name: "web", Namespace: "app", Health: graph.HealthHealthy},
+			{ID: "core/service/app/web", Kind: "Service", Name: "web", Namespace: "app", Health: graph.HealthHealthy},
+			{ID: "core/pod/app/web-1", Kind: "Pod", Name: "web-1", Namespace: "app", Health: graph.HealthError, Reason: "CrashLoopBackOff"},
+			{ID: "core/pod/app/web-2", Kind: "Pod", Name: "web-2", Namespace: "app", Health: graph.HealthHealthy},
+		},
+	}
+}
+
+func TestFind_FiltersAndFormats(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, findSnapshot())
+
+	var b bufs
+	if code := Run([]string{"find", "--name-contains", "web", "--kind", "pods", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	out := b.out.String()
+	if !strings.Contains(out, "Pod") || !strings.Contains(out, "web-1") || !strings.Contains(out, "✗ CrashLoopBackOff") {
+		t.Fatalf("unexpected output:\n%s", out)
+	}
+	if strings.Contains(out, "Deployment") {
+		t.Fatalf("--kind pods must exclude the Deployment:\n%s", out)
+	}
+	if !strings.Contains(out, "2 matches (of 6 nodes)") {
+		t.Fatalf("missing totals line:\n%s", out)
+	}
+	if !strings.Contains(out, "snapshot 4h12m old") {
+		t.Fatalf("missing footer:\n%s", out)
+	}
+
+	b = bufs{}
+	if code := Run([]string{"find", "--health", "error", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	if !strings.Contains(b.out.String(), "1 matches") || strings.Contains(b.out.String(), "web-2") {
+		t.Fatalf("--health error should keep only web-1:\n%s", b.out.String())
+	}
+
+	b = bufs{}
+	if code := Run([]string{"find", "--limit", "2", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	if !strings.Contains(b.out.String(), "showing 2 of 6 matches") {
+		t.Fatalf("limit must be reported:\n%s", b.out.String())
+	}
+}
+
+func TestFind_MissIsExit2WithTheFix(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, findSnapshot())
+	var b bufs
+	if code := Run([]string{"find", "--name-contains", "cube", "--namespace", "cube", "--data-dir", dir}, b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d", code, ExitMiss)
+	}
+	if b.out.Len() != 0 {
+		t.Fatalf("miss must leave stdout empty: %q", b.out.String())
+	}
+	e := b.err.String()
+	for _, want := range []string{
+		"No resource matching",
+		"context=dev/ci1 ns=[app] (4h12m old)",
+		"kscope --context dev/ci1 --data-dir " + dir,
+		"--discover-namespaces=app,cube",
+		"--include-infra=true --include-crds=false",
+	} {
+		if !strings.Contains(e, want) {
+			t.Errorf("stderr missing %q:\n%s", want, e)
+		}
+	}
+}
+
+func TestFind_BadHealthIsExit1(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, findSnapshot())
+	var b bufs
+	if code := Run([]string{"find", "--health", "meh", "--data-dir", dir}, b.io()); code != ExitError {
+		t.Fatalf("code = %d, want 1", code)
+	}
+}
+
+func TestRefreshHint_AllNamespaces(t *testing.T) {
+	snap := findSnapshot()
+	snap.Scope.Namespaces = nil
+	hint := refreshHint(snap, "/d", "cube")
+	if !strings.Contains(hint, "--discover-all-namespaces") || strings.Contains(hint, "--discover-namespaces=") {
+		t.Fatalf("all-namespace scope must refresh with --discover-all-namespaces: %q", hint)
+	}
+}
+
+func TestRefreshHint_FallsBackToClusterContext(t *testing.T) {
+	// Scope.Context is empty whenever --context was not passed to discovery;
+	// Cluster.Context always holds the resolved name and must be used so the
+	// refresh command never targets a blank --context.
+	snap := findSnapshot()
+	snap.Scope.Context = ""
+	hint := refreshHint(snap, "/d", "")
+	if !strings.Contains(hint, "--context dev/ci1") {
+		t.Fatalf("refreshHint must fall back to Cluster.Context: %q", hint)
 	}
 }
