@@ -189,16 +189,16 @@ func footer(snap graph.Snapshot, dataDir string) string {
 // should show.
 func snapshotContext(snap graph.Snapshot) string {
 	if snap.Cluster.Context != "" {
-		return snap.Cluster.Context
+		return graph.Sanitize(snap.Cluster.Context, 0)
 	}
-	return snap.Scope.Context
+	return graph.Sanitize(snap.Scope.Context, 0)
 }
 
 func nsList(scope graph.Scope) string {
 	if len(scope.Namespaces) == 0 {
 		return "[all]"
 	}
-	return "[" + strings.Join(scope.Namespaces, ",") + "]"
+	return "[" + graph.Sanitize(strings.Join(scope.Namespaces, ","), 0) + "]"
 }
 
 // humanAge is coarse on purpose: "4h12m" tells an agent what it needs and
@@ -310,12 +310,12 @@ func resolveOne(snap graph.Snapshot, ref graph.NodeRef, dataDir string, io IO) (
 	case 1:
 		return cands[0], ExitOK
 	case 0:
-		what := "name=" + ref.Name
+		what := "name=" + graph.Sanitize(ref.Name, 0)
 		if ref.Namespace != "" {
-			what += " namespace=" + ref.Namespace
+			what += " namespace=" + graph.Sanitize(ref.Namespace, graph.ShortText)
 		}
 		if ref.Kind != "" {
-			what += " kind=" + ref.Kind
+			what += " kind=" + graph.Sanitize(ref.Kind, graph.ShortText)
 		}
 		fmt.Fprint(io.Stderr, missMessage(what, snap, dataDir, ref.Namespace))
 		return graph.Node{}, ExitMiss
@@ -329,13 +329,13 @@ func resolveOne(snap graph.Snapshot, ref graph.NodeRef, dataDir string, io IO) (
 	case ref.Kind != "":
 		advice = "Add --namespace to choose one:"
 	}
-	fmt.Fprintf(io.Stderr, "Ambiguous: '%s' matches %d resources in the snapshot.\n%s\n", ref.Name, len(cands), advice)
+	fmt.Fprintf(io.Stderr, "Ambiguous: '%s' matches %d resources in the snapshot.\n%s\n", graph.Sanitize(ref.Name, 0), len(cands), advice)
 	for _, n := range cands {
 		ns := ""
 		if n.Namespace != "" {
-			ns = "-n " + n.Namespace
+			ns = "-n " + graph.Sanitize(n.Namespace, 0)
 		}
-		fmt.Fprintf(io.Stderr, "  %-16s %-40s %s\n", n.Kind, n.Name, ns)
+		fmt.Fprintf(io.Stderr, "  %-16s %-40s %s\n", graph.Sanitize(n.Kind, graph.ShortText), graph.Sanitize(n.Name, 0), ns)
 	}
 	return graph.Node{}, ExitMiss
 }

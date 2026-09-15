@@ -44,12 +44,12 @@ func runManifest(args []string, io IO) int {
 		return code
 	}
 	if node.Synthetic {
-		fmt.Fprintf(io.Stderr, "%s %s is a synthetic node — a logical grouping with no API object behind it, so there is no manifest.\n", node.Kind, node.Name)
+		fmt.Fprintf(io.Stderr, "%s %s is a synthetic node — a logical grouping with no API object behind it, so there is no manifest.\n", graph.Sanitize(node.Kind, graph.ShortText), graph.Sanitize(node.Name, 0))
 		return ExitMiss
 	}
 	y, err := store.Manifest(node.ID)
 	if errors.Is(err, graph.ErrNoManifest) {
-		fmt.Fprintf(io.Stderr, "no manifest captured for %s %s. Manifests are captured at discovery; re-run it to pick this one up:\n%s", node.Kind, node.Name, refreshHint(snap, c.dataDir, node.Namespace))
+		fmt.Fprintf(io.Stderr, "no manifest captured for %s %s. Manifests are captured at discovery; re-run it to pick this one up:\n%s", graph.Sanitize(node.Kind, graph.ShortText), graph.Sanitize(node.Name, 0), refreshHint(snap, c.dataDir, node.Namespace))
 		return ExitMiss
 	}
 	if err != nil {

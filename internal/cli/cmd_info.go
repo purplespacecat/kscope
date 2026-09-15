@@ -45,16 +45,18 @@ func runInfo(args []string, io IO) int {
 func infoText(snap graph.Snapshot, dataDir string) string {
 	var sb strings.Builder
 	cl := snap.Cluster
-	ver := cl.Version
+	// Everything on these lines comes from the snapshot, including strings
+	// the API server or a CRD author chose; filter them (graph.Sanitize).
+	ver := graph.Sanitize(cl.Version, graph.ShortText)
 	if cl.Distro != "" {
-		ver += ", " + cl.Distro
+		ver += ", " + graph.Sanitize(cl.Distro, graph.ShortText)
 	}
 	// snapshotContext, not cl.Context: the footer uses it, and a snapshot
 	// that recorded only what was asked for would otherwise print a blank
 	// cluster line above a populated footer.
 	fmt.Fprintf(&sb, "cluster   %s (%s)\n", snapshotContext(snap), ver)
 	if cl.Server != "" {
-		fmt.Fprintf(&sb, "server    %s\n", cl.Server)
+		fmt.Fprintf(&sb, "server    %s\n", graph.Sanitize(cl.Server, 0))
 	}
 	fmt.Fprintf(&sb, "scope     ns=%s infra=%t crds=%t\n", nsList(snap.Scope), snap.Scope.IncludeInfra, snap.Scope.IncludeCRDs)
 	fmt.Fprintf(&sb, "captured  %s (%s ago) in %dms\n", snap.Timestamp.UTC().Format("2006-01-02T15:04:05Z"), humanAge(now().Sub(snap.Timestamp)), snap.Stats.DurationMs)
@@ -76,7 +78,7 @@ func infoText(snap graph.Snapshot, dataDir string) string {
 	})
 	parts := make([]string, len(kinds))
 	for i, k := range kinds {
-		parts[i] = k.kind + " " + strconv.Itoa(k.n)
+		parts[i] = graph.Sanitize(k.kind, graph.ShortText) + " " + strconv.Itoa(k.n)
 	}
 	fmt.Fprintf(&sb, "kinds     %s\n", strings.Join(parts, ", "))
 
@@ -117,7 +119,9 @@ func topErrors(errs []string, n int) []string {
 	}
 	out := make([]string, len(order))
 	for i, e := range order {
-		out[i] = "(" + strconv.Itoa(count[e]) + "×) " + e
+		// Uncapped: a discovery error is a whole sentence and truncating it
+		// would lose the part that says which API call failed.
+		out[i] = "(" + strconv.Itoa(count[e]) + "×) " + graph.Sanitize(e, 0)
 	}
 	return out
 }

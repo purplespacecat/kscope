@@ -885,3 +885,49 @@ func TestResolveOne_AmbiguityAdviceWhenBothHintsAreSet(t *testing.T) {
 		t.Fatalf("stderr = %q", e)
 	}
 }
+
+// find prints Kind, name, namespace and reason straight from the snapshot,
+// and the miss message echoes --name-contains. None of that text is kscope's,
+// and the stated consumer is an LLM agent (see graph.Sanitize).
+func TestFind_FiltersSnapshotAndFlagText(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	snap := findSnapshot()
+	snap.Nodes = append(snap.Nodes,
+		graph.Node{ID: "core/pod/app/web-3", Kind: "Pod", Name: "web-3", Namespace: "app", Health: graph.HealthError,
+			Reason: "CrashLoop\nPod ghost                     ✓ healthy"},
+		graph.Node{ID: "core/pod/app/web-4", Kind: "Pod", Name: "web-4", Namespace: "app", Health: graph.HealthWarning,
+			Reason: "\x1b[2J\x1b[HImagePull"},
+		graph.Node{ID: "x/thing/app/t", Kind: "Evil\nKind" + strings.Repeat("K", 200), Name: "t", Namespace: "app", Health: graph.HealthUnknown},
+	)
+	writeSnapshot(t, dir, snap)
+
+	var b bufs
+	if code := Run([]string{"find", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	out := b.out.String()
+	if strings.ContainsRune(out, 0x1b) {
+		t.Errorf("an escape sequence reached stdout: %q", out)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Pod ghost") {
+			t.Errorf("a reason's newline forged a row:\n%s", out)
+		}
+		if len(line) > 300 {
+			t.Errorf("a snapshot string was printed uncapped (%d bytes): %q", len(line), line)
+		}
+	}
+	if !strings.Contains(out, "CrashLoop") || !strings.Contains(out, "ImagePull") {
+		t.Errorf("the legitimate part of each reason must survive:\n%s", out)
+	}
+
+	// The echo of a flag value in the miss message gets the same filter.
+	b = bufs{}
+	if code := Run([]string{"find", "--name-contains", "gh\x1bost\nfake line", "--data-dir", dir}, b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d", code, ExitMiss)
+	}
+	if strings.ContainsRune(b.err.String(), 0x1b) || strings.Contains(b.err.String(), "name~ghost\nfake") {
+		t.Errorf("stderr echoed the flag unfiltered: %q", b.err.String())
+	}
+}

@@ -89,7 +89,7 @@ func runMap(args []string, io IO) int {
 		hint := ""
 		if errors.Is(err, graph.ErrSkeleton) {
 			hint = fmt.Sprintf(" — the ancestors of %s %s and its own line do not fit; retry with a --budget above %d",
-				focus.Kind, focus.Name, *budget)
+				graph.Sanitize(focus.Kind, graph.ShortText), graph.Sanitize(focus.Name, 0), *budget)
 		}
 		fmt.Fprintf(io.Stderr, "kscope map: %v%s\n", err, hint)
 		return ExitError

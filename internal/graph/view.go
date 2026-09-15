@@ -128,12 +128,60 @@ func healthGlyph(h Health) string {
 // list output uses the same vocabulary.
 func HealthGlyph(h Health) string { return healthGlyph(h) }
 
+// ShortText is the cap for a snapshot-derived word that is a label, not
+// content: a health reason, a Kind. 64 bytes is generous for either.
+const ShortText = 64
+
+// sanitize makes a snapshot- or flag-derived string safe to print. The stated
+// consumer of this output is an LLM agent, and these strings come from places
+// kscope does not control — a container runtime's waiting reason, a CRD's
+// spec.names.kind — so a newline followed by plausible-looking text is prompt
+// injection into that agent's context, and an ANSI escape is terminal
+// injection for the human reading the same output. Dropped: C0 and C1
+// controls, DEL, and the Unicode bidi overrides and isolates, which can
+// reorder a line's visible text without changing its bytes. max caps the
+// result in bytes (max <= 0: no cap); the glyphs, connectors, · → and ← this
+// package emits itself are never passed through here, so they always survive.
+//
+// Names are deliberately left uncapped by callers: a name is the identity an
+// agent acts on — it is what the next kubectl call needs — and the projection
+// is already bounded as a whole by --budget.
+func sanitize(s string, max int) string {
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r < 0x20, r == 0x7f: // C0 and DEL
+			return -1
+		case r >= 0x80 && r <= 0x9f: // C1
+			return -1
+		case r >= 0x202a && r <= 0x202e: // bidi embeddings and overrides
+			return -1
+		case r >= 0x2066 && r <= 0x2069: // bidi isolates
+			return -1
+		}
+		return r
+	}, s)
+	if max <= 0 || len(clean) <= max {
+		return clean
+	}
+	const ellipsis = "…"
+	cut := max - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(clean[cut]) {
+		cut--
+	}
+	return clean[:cut] + ellipsis
+}
+
+// Sanitize is exported for the same reason HealthGlyph is: the CLI prints the
+// same snapshot-derived values outside the projection and must filter them
+// the same way.
+func Sanitize(s string, max int) string { return sanitize(s, max) }
+
 // nodeLabel is the only naming an agent sees: kind and name, never the ID.
 func nodeLabel(n Node) string {
 	if n.Kind == "Namespace" {
-		return "ns " + n.Name
+		return "ns " + sanitize(n.Name, 0)
 	}
-	return n.Kind + " " + n.Name
+	return sanitize(n.Kind, ShortText) + " " + sanitize(n.Name, 0)
 }
 
 // healthText is the right-hand column. A reason beats the health word: an
@@ -142,7 +190,7 @@ func healthText(n Node, focus bool) string {
 	g := healthGlyph(n.Health)
 	switch {
 	case n.Reason != "":
-		return g + " " + n.Reason
+		return g + " " + sanitize(n.Reason, ShortText)
 	case focus:
 		return g + " " + string(n.Health)
 	default:
@@ -240,7 +288,7 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	// object that manages it, and the kubectl call that fetches it.
 	right := healthText(focus, true)
 	if g := focus.GitOps; g != nil {
-		right += "    [" + g.Tool + ": " + g.Kind + "/" + g.Name + "]"
+		right += "    [" + sanitize(g.Tool, ShortText) + ": " + sanitize(g.Kind, ShortText) + "/" + sanitize(g.Name, 0) + "]"
 	}
 	v.line(indent+connector, nodeLabel(focus), right)
 	childIndent := indent
@@ -249,7 +297,7 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	}
 	var kids []*row
 	if focus.Kubectl != "" {
-		kids = append(kids, &row{kind: rowKubectl, label: focus.Kubectl, level: 0})
+		kids = append(kids, &row{kind: rowKubectl, label: sanitize(focus.Kubectl, 0), level: 0})
 	}
 	kids = append(kids, v.build(focus.ID, 1)...)
 	kids = append(kids, v.edgeRows([]string{focus.ID}, 0, focus.Health)...)
@@ -534,7 +582,7 @@ func (v *view) groupRow(kind string, members []Node, level int) *row {
 	}
 	g := &row{
 		kind:   rowGroup,
-		label:  pluralize(kind) + " (" + strconv.Itoa(len(members)) + ")",
+		label:  sanitize(pluralize(kind), ShortText) + " (" + strconv.Itoa(len(members)) + ")",
 		right:  rollup(members),
 		level:  level,
 		health: worst,
@@ -546,7 +594,7 @@ func (v *view) groupRow(kind string, members []Node, level int) *row {
 		shown = shown[:groupExamples]
 	}
 	for _, m := range shown {
-		g.kids = append(g.kids, &row{kind: rowMember, label: m.Name, right: healthText(m, false), level: level, health: m.Health, name: m.Name, nodes: 1})
+		g.kids = append(g.kids, &row{kind: rowMember, label: sanitize(m.Name, 0), right: healthText(m, false), level: level, health: m.Health, name: m.Name, nodes: 1})
 	}
 	if rest := len(members) - len(shown); rest > 0 {
 		g.kids = append(g.kids, &row{kind: rowMore, label: "… +" + strconv.Itoa(rest) + " more", level: level, nodes: rest})
@@ -573,7 +621,7 @@ func (v *view) edgeRows(owners []string, level int, ownerHealth Health) []*row {
 				continue
 			}
 			seen["out|"+e.Kind+"|"+e.Target] = true
-			label := e.Kind + " → " + nodeLabel(peer)
+			label := sanitize(string(e.Kind), ShortText) + " → " + nodeLabel(peer)
 			rows = append(rows, &row{kind: rowEdge, label: label, level: level, health: ownerHealth, name: "0" + label})
 		}
 		for _, e := range v.incoming[id] {
@@ -582,7 +630,7 @@ func (v *view) edgeRows(owners []string, level int, ownerHealth Health) []*row {
 				continue
 			}
 			seen["in|"+e.Kind+"|"+e.Source] = true
-			label := "← " + e.Kind + " " + nodeLabel(peer)
+			label := "← " + sanitize(string(e.Kind), ShortText) + " " + nodeLabel(peer)
 			rows = append(rows, &row{kind: rowEdge, label: label, level: level, health: ownerHealth, name: "1" + label})
 		}
 	}

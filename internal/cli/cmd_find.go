@@ -93,16 +93,20 @@ func runFind(args []string, io IO) int {
 	if len(shown) > *limit {
 		shown = shown[:*limit]
 	}
+	// Kind, name, namespace and reason all come from the snapshot, which
+	// carries strings kscope did not author (a container runtime's waiting
+	// reason, a CRD's spec.names.kind). Filter them before they reach an
+	// agent's context or a terminal — see graph.Sanitize.
 	for _, n := range shown {
 		nsCol := ""
 		if n.Namespace != "" {
-			nsCol = "-n " + n.Namespace
+			nsCol = "-n " + graph.Sanitize(n.Namespace, 0)
 		}
 		right := graph.HealthGlyph(n.Health)
 		if n.Reason != "" {
-			right += " " + n.Reason
+			right += " " + graph.Sanitize(n.Reason, graph.ShortText)
 		}
-		fmt.Fprintf(io.Stdout, "%-16s %-40s %-24s %s\n", n.Kind, n.Name, nsCol, right)
+		fmt.Fprintf(io.Stdout, "%-16s %-40s %-24s %s\n", graph.Sanitize(n.Kind, graph.ShortText), graph.Sanitize(n.Name, 0), nsCol, right)
 	}
 	if len(shown) < len(matches) {
 		fmt.Fprintf(io.Stdout, "showing %d of %d matches (of %d nodes)\n", len(shown), len(matches), len(snap.Nodes))
@@ -115,18 +119,20 @@ func runFind(args []string, io IO) int {
 
 // describe renders the filters for the miss message: "name~cube kind=pods".
 func describe(contains, kind, ns, health string) string {
+	// These are echoed straight back from the command line, so they get the
+	// same filter as snapshot-derived text.
 	var parts []string
 	if contains != "" {
-		parts = append(parts, "name~"+contains)
+		parts = append(parts, "name~"+graph.Sanitize(contains, graph.ShortText))
 	}
 	if kind != "" {
-		parts = append(parts, "kind="+kind)
+		parts = append(parts, "kind="+graph.Sanitize(kind, graph.ShortText))
 	}
 	if ns != "" {
-		parts = append(parts, "namespace="+ns)
+		parts = append(parts, "namespace="+graph.Sanitize(ns, graph.ShortText))
 	}
 	if health != "" {
-		parts = append(parts, "health="+health)
+		parts = append(parts, "health="+graph.Sanitize(health, graph.ShortText))
 	}
 	return strings.Join(parts, " ")
 }
