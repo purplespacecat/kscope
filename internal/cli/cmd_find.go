@@ -32,6 +32,10 @@ func runFind(args []string, io IO) int {
 		fmt.Fprintf(io.Stderr, "kscope find: unexpected argument %q\n", pos[0])
 		return ExitError
 	}
+	if *limit < 1 {
+		fmt.Fprintf(io.Stderr, "kscope find: --limit must be at least 1; got %d\n", *limit)
+		return ExitError
+	}
 	var wantHealth graph.Health
 	if *health != "" {
 		switch h := graph.Health(*health); h {

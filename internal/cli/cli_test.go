@@ -309,6 +309,38 @@ func TestFind_BadHealthIsExit1(t *testing.T) {
 	}
 }
 
+func TestFind_BadLimitIsExit1(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, findSnapshot())
+
+	for _, limit := range []string{"-1", "0"} {
+		var b bufs
+		if code := Run([]string{"find", "--limit", limit, "--data-dir", dir}, b.io()); code != ExitError {
+			t.Fatalf("--limit %s: code = %d, want %d", limit, code, ExitError)
+		}
+		if b.out.Len() != 0 {
+			t.Fatalf("--limit %s: stdout must be empty, got %q", limit, b.out.String())
+		}
+		if !strings.Contains(b.err.String(), "--limit") {
+			t.Fatalf("--limit %s: stderr must name --limit, got %q", limit, b.err.String())
+		}
+	}
+
+	// A bad --limit must be caught before the store is read: exit 1 even
+	// against an empty data dir that would otherwise yield exit 3.
+	var b bufs
+	empty := t.TempDir()
+	if code := Run([]string{"find", "--limit", "-1", "--data-dir", empty}, b.io()); code != ExitError {
+		t.Fatalf("code = %d, want %d (must precede loadSnapshot)", code, ExitError)
+	}
+	if b.out.Len() != 0 {
+		t.Fatalf("stdout must be empty, got %q", b.out.String())
+	}
+	if !strings.Contains(b.err.String(), "--limit") {
+		t.Fatalf("stderr must name --limit, got %q", b.err.String())
+	}
+}
+
 func TestRefreshHint_AllNamespaces(t *testing.T) {
 	snap := findSnapshot()
 	snap.Scope.Namespaces = nil
