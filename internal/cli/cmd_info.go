@@ -14,7 +14,7 @@ const infoSynopsis = `kscope info [--data-dir DIR]
 Describe the loaded snapshot: cluster, scope, age, counts, discovery errors.`
 
 func init() {
-	register(command{name: "info", synopsis: infoSynopsis, run: runInfo})
+	register(command{name: "info", summary: "describe the loaded snapshot: cluster, scope, age, counts, discovery errors", synopsis: infoSynopsis, run: runInfo})
 }
 
 func runInfo(args []string, io IO) int {

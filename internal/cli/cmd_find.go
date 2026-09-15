@@ -14,7 +14,7 @@ List resources in the snapshot. --kind accepts a Kind (Deployment) or its
 plural (deployments). With no filters, an inventory up to --limit.`
 
 func init() {
-	register(command{name: "find", synopsis: findSynopsis, run: runFind})
+	register(command{name: "find", summary: "list resources in the snapshot, filtered by name, kind, namespace or health", synopsis: findSynopsis, run: runFind})
 }
 
 func runFind(args []string, io IO) int {

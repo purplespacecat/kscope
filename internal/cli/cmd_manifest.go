@@ -15,7 +15,7 @@ staleness footer is appended as a YAML comment, so the output stays valid
 YAML when redirected. Exit 2 if the resource is synthetic or has no manifest.`
 
 func init() {
-	register(command{name: "manifest", synopsis: manifestSynopsis, run: runManifest})
+	register(command{name: "manifest", summary: "print one resource's redacted YAML as captured at discovery time", synopsis: manifestSynopsis, run: runManifest})
 }
 
 func runManifest(args []string, io IO) int {

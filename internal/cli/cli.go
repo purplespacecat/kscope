@@ -40,8 +40,25 @@ var now = time.Now
 
 type command struct {
 	name     string
+	summary  string // one line, for `kscope --help`
 	synopsis string
 	run      func(args []string, io IO) int
+}
+
+// Summary is one subcommand as `kscope --help` lists it. Exported so the
+// top-level help cannot list a command that does not exist, or miss one.
+type Summary struct {
+	Name string
+	Text string
+}
+
+// Summaries returns every subcommand in registration order.
+func Summaries() []Summary {
+	out := make([]Summary, len(commands))
+	for i, c := range commands {
+		out[i] = Summary{Name: c.name, Text: c.summary}
+	}
+	return out
 }
 
 // commands is filled in by the cmd_*.go files' init functions, so adding a

@@ -20,7 +20,7 @@ below it). Flags may come before or after the name.
 Exit 0: printed. Exit 2: no match or ambiguous — stderr names the fix.`
 
 func init() {
-	register(command{name: "map", synopsis: mapSynopsis, run: runMap})
+	register(command{name: "map", summary: "print one resource's neighbourhood: containment, one hop of wiring, health", synopsis: mapSynopsis, run: runMap})
 }
 
 func runMap(args []string, io IO) int {
