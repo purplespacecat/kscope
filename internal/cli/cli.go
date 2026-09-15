@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -162,7 +163,8 @@ func loadSnapshot(dataDir string, io IO) (graph.Snapshot, *graph.Store, int) {
 	}
 	snap, err := store.Get()
 	if errors.Is(err, graph.ErrEmpty) {
-		fmt.Fprintf(io.Stderr, "no snapshot in %s — nothing has been discovered yet. Run discovery first:\n  kscope --data-dir %s --discover-namespaces=<ns>[,<ns>...]\n", dataDir, dataDir)
+		q := shellQuote(dataDir)
+		fmt.Fprintf(io.Stderr, "no snapshot in %s — nothing has been discovered yet. Run discovery first:\n  kscope --data-dir %s --discover-namespaces=<ns>[,<ns>...]\n", q, q)
 		return graph.Snapshot{}, nil, ExitNoSnapshot
 	}
 	if err != nil {
@@ -224,7 +226,19 @@ func humanAge(d time.Duration) string {
 // change scope (spec §5.2).
 func refreshHint(snap graph.Snapshot, dataDir, extraNS string) string {
 	var sb strings.Builder
-	sb.WriteString("  kscope --context " + snapshotContext(snap) + " --data-dir " + dataDir + " \\\n")
+	// A snapshot that records no context at all (written before ClusterMeta
+	// existed, or by hand — Store.Load accepts both) must not produce
+	// "--context  --data-dir /path": the shell collapses the space, flag
+	// binds "--data-dir" as the context value, /path becomes a positional
+	// that stops parsing, --discover-namespaces is never seen, and what an
+	// agent was told to run starts the HTTP server and blocks — the hang
+	// §3.1 exists to prevent. Say so instead and let discovery resolve it.
+	if ctx := snapshotContext(snap); ctx == "" {
+		sb.WriteString("  # the snapshot records no context, so this discovers the kubeconfig's current-context\n")
+		sb.WriteString("  kscope --data-dir " + shellQuote(dataDir) + " \\\n")
+	} else {
+		sb.WriteString("  kscope --context " + shellQuote(ctx) + " --data-dir " + shellQuote(dataDir) + " \\\n")
+	}
 	if len(snap.Scope.Namespaces) == 0 {
 		sb.WriteString("         --discover-all-namespaces \\\n")
 	} else {
@@ -232,11 +246,49 @@ func refreshHint(snap graph.Snapshot, dataDir, extraNS string) string {
 		if extraNS != "" && !containsString(ns, extraNS) {
 			ns = append(ns, extraNS)
 		}
-		sb.WriteString("         --discover-namespaces=" + strings.Join(ns, ",") + " \\\n")
+		sb.WriteString("         --discover-namespaces=" + shellQuote(strings.Join(ns, ",")) + " \\\n")
 	}
 	sb.WriteString("         --include-infra=" + strconv.FormatBool(snap.Scope.IncludeInfra) +
 		" --include-crds=" + strconv.FormatBool(snap.Scope.IncludeCRDs) + "\n")
 	return sb.String()
+}
+
+// nsLabelRE is the DNS-1123 label rule every Kubernetes namespace obeys.
+// Anything else cannot name a namespace, so rejecting it early costs nothing
+// and keeps it out of the refresh command a miss message tells an agent to
+// run: --namespace 'x --context prod' would otherwise be interpolated into
+// that command verbatim, and Go's flag package takes the last occurrence of a
+// flag, so the "refresh" would discover a different cluster and overwrite the
+// snapshot with it.
+var nsLabelRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// checkNamespace validates a --namespace value where the flag is read, before
+// the store is touched, the way --health and --limit are validated in find.
+// An empty value means "no namespace filter" and is always fine.
+func checkNamespace(cmd, ns string, io IO) int {
+	if ns == "" || (len(ns) <= 63 && nsLabelRE.MatchString(ns)) {
+		return ExitOK
+	}
+	fmt.Fprintf(io.Stderr, "kscope %s: --namespace must be a DNS-1123 label — lower-case letters, digits and '-', starting and ending alphanumeric, at most 63 characters; got %q\n", cmd, ns)
+	return ExitError
+}
+
+// shellSafe is the set of characters that carry no meaning to a shell, so a
+// word made only of them needs no quoting. It is deliberately conservative:
+// everything else — spaces, $, backticks, ;, quotes, newlines — gets quoted.
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+// shellQuote renders s as one shell word. Suggested commands are printed for
+// an agent to run, and an agent may well pipe them to a shell, so anything
+// interpolated into one must survive as a single argument: a data dir with a
+// space would otherwise end the flag and turn the rest into positionals,
+// which silently changes the scope the command refreshes. Words that need no
+// quoting are left alone so the common case stays readable.
+func shellQuote(s string) string {
+	if shellSafe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func containsString(xs []string, x string) bool {

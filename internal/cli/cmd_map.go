@@ -38,6 +38,10 @@ func runMap(args []string, io IO) int {
 		return ExitError
 	}
 
+	if code := checkNamespace("map", *ns, io); code != ExitOK {
+		return code
+	}
+
 	snap, _, code := loadSnapshot(c.dataDir, io)
 	if code != ExitOK {
 		return code

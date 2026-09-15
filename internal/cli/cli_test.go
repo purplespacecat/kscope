@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -722,5 +723,118 @@ func TestManifest_MissingManifestIsExit2(t *testing.T) {
 	}
 	if !strings.Contains(b.err.String(), "no manifest") || !strings.Contains(b.err.String(), "--discover-namespaces=app") {
 		t.Fatalf("stderr must explain and name the refresh: %q", b.err.String())
+	}
+}
+
+// A --namespace value is interpolated into the refresh command a miss
+// message prints for an agent to run, so anything that is not a namespace
+// must be rejected where the flag is read — before the store is touched, the
+// way --limit and --health already are. 'x --context prod' is the sharp case:
+// Go's flag package takes the last occurrence, so the "refresh" would
+// discover a different cluster and overwrite the snapshot with it.
+func TestNamespaceMustBeADNS1123Label(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, findSnapshot())
+	empty := t.TempDir() // no snapshot: a late check would be exit 3, not 1
+
+	bad := []string{"a b", "x --context prod", "$(id)", "a;b", "UPPER", strings.Repeat("n", 64)}
+	for _, ns := range bad {
+		for _, args := range [][]string{
+			{"map", "web", "--namespace", ns},
+			{"find", "--namespace", ns},
+			{"manifest", "web", "--namespace", ns},
+		} {
+			for _, d := range []string{dir, empty} {
+				var b bufs
+				if code := Run(append(args, "--data-dir", d), b.io()); code != ExitError {
+					t.Errorf("%v ns=%q: code = %d, want %d (stderr %q)", args, ns, code, ExitError, b.err.String())
+				}
+				if b.out.Len() != 0 {
+					t.Errorf("%v ns=%q: stdout must stay empty, got %q", args, ns, b.out.String())
+				}
+				if !strings.Contains(b.err.String(), "--namespace") {
+					t.Errorf("%v ns=%q: stderr must name the flag, got %q", args, ns, b.err.String())
+				}
+			}
+		}
+	}
+
+	// A real namespace still works, and the empty value still means "no filter".
+	for _, args := range [][]string{
+		{"find", "--namespace", "app", "--data-dir", dir},
+		{"find", "--data-dir", dir},
+	} {
+		var b bufs
+		if code := Run(args, b.io()); code != ExitOK {
+			t.Errorf("%v: code = %d, want 0 (stderr %q)", args, code, b.err.String())
+		}
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	cases := map[string]string{
+		"dev/ci1":              "dev/ci1",
+		"/home/u/.local/share": "/home/u/.local/share",
+		"app,cube":             "app,cube",
+		"/home/my data/kscope": `'/home/my data/kscope'`,
+		"$(id)":                `'$(id)'`,
+		"it's":                 `'it'\''s'`,
+		"a;rm -rf /":           `'a;rm -rf /'`,
+	}
+	for in, want := range cases {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Anything the hint or the no-snapshot message interpolates has to survive as
+// one shell word: a data dir with a space would otherwise end the --data-dir
+// flag and turn the rest of the line into positionals, which stops flag
+// parsing and silently drops the scope flags that follow.
+func TestDataDirWithASpaceIsQuotedInBothCommands(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := filepath.Join(t.TempDir(), "my data")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exit 3: no snapshot yet. The message names the command that fills it.
+	var b bufs
+	if code := Run([]string{"info", "--data-dir", dir}, b.io()); code != ExitNoSnapshot {
+		t.Fatalf("code = %d, want %d", code, ExitNoSnapshot)
+	}
+	if n := strings.Count(b.err.String(), "'"+dir+"'"); n != 2 {
+		t.Fatalf("both interpolations of the data dir must be quoted, found %d in:\n%s", n, b.err.String())
+	}
+
+	// Exit 2: a miss, whose hint is the refresh command.
+	writeSnapshot(t, dir, findSnapshot())
+	b = bufs{}
+	if code := Run([]string{"find", "--name-contains", "cube", "--data-dir", dir}, b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d", code, ExitMiss)
+	}
+	if !strings.Contains(b.err.String(), "--data-dir '"+dir+"'") {
+		t.Fatalf("the refresh hint must quote the data dir:\n%s", b.err.String())
+	}
+}
+
+// A snapshot with neither Cluster.Context nor Scope.Context (written before
+// ClusterMeta existed, or by hand) must not yield "kscope --context
+// --data-dir /path": flag would bind "--data-dir" as the context value, /path
+// would become a positional that stops parsing, and the command an agent was
+// told to run would start the HTTP server and block.
+func TestRefreshHint_OmitsAnUnknownContext(t *testing.T) {
+	snap := findSnapshot()
+	snap.Scope.Context, snap.Cluster.Context = "", ""
+	hint := refreshHint(snap, "/d", "cube")
+	if strings.Contains(hint, "--context") {
+		t.Fatalf("an unknown context must not be emitted as a flag: %q", hint)
+	}
+	if !strings.Contains(hint, "# the snapshot records no context") {
+		t.Fatalf("the hint must explain what it will discover instead: %q", hint)
+	}
+	if !strings.Contains(hint, "kscope --data-dir /d \\\n") || !strings.Contains(hint, "--discover-namespaces=app,cube") {
+		t.Fatalf("the rest of the command must be intact: %q", hint)
 	}
 }

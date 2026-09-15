@@ -31,6 +31,10 @@ func runManifest(args []string, io IO) int {
 		return ExitError
 	}
 
+	if code := checkNamespace("manifest", *ns, io); code != ExitOK {
+		return code
+	}
+
 	snap, store, code := loadSnapshot(c.dataDir, io)
 	if code != ExitOK {
 		return code

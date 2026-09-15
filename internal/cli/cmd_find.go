@@ -36,6 +36,9 @@ func runFind(args []string, io IO) int {
 		fmt.Fprintf(io.Stderr, "kscope find: --limit must be at least 1; got %d\n", *limit)
 		return ExitError
 	}
+	if code := checkNamespace("find", *ns, io); code != ExitOK {
+		return code
+	}
 	var wantHealth graph.Health
 	if *health != "" {
 		switch h := graph.Health(*health); h {

@@ -322,6 +322,18 @@ Snapshot scope is context=dev/ci1 ns=[gitlab-ci-exporter] (4h12m old);
          --include-infra=true --include-crds=true
 ```
 
+That promise holds only because of what the hint refuses to interpolate. A
+`--namespace` must be a DNS-1123 label, rejected with exit 1 where the flag is
+read if it is not — `--namespace 'x --context prod'` would otherwise render a
+second `--context`, and Go's `flag` takes the last occurrence, so following the
+hint would discover a different cluster. The data dir, the context and the
+namespace list are each emitted as one shell word, quoted when they contain
+anything a shell would act on. And a snapshot that records no context at all
+(pre-`ClusterMeta`, or hand-written) omits `--context` entirely, with a comment
+saying the command will use the kubeconfig's current-context: a bare
+`--context` would swallow the next flag as its value and leave a command that
+starts the HTTP server and blocks.
+
 An **ambiguous** match is answered with the candidates and no map. Today
 `ResolveNode` returns the first match when the kind hint does not settle it;
 that is a defensible landing spot for a human on a canvas and the worst possible
