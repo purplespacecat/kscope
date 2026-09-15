@@ -173,6 +173,24 @@ func TestInfo_SummarisesErrorsInsteadOfListingThem(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
+	// Assert the order of error messages: by count descending, then first occurrence.
+	idx700 := strings.Index(out, "(700×) list pods in ns a: rate limited")
+	idx300 := strings.Index(out, "(300×) list secrets in ns a: rate limited")
+	idx156 := strings.Index(out, "(156×) list configmaps in ns a: rate limited")
+	idxCrds := strings.Index(out, "(1×) crds: forbidden")
+	idxNodes := strings.Index(out, "(1×) nodes: forbidden")
+	if idx700 < 0 || idx300 < 0 || idx156 < 0 || idxCrds < 0 || idxNodes < 0 {
+		t.Fatalf("could not find all error messages")
+	}
+	if idx700 >= idx300 {
+		t.Fatalf("(700×) should precede (300×), got idx700=%d idx300=%d", idx700, idx300)
+	}
+	if idx300 >= idx156 {
+		t.Fatalf("(300×) should precede (156×), got idx300=%d idx156=%d", idx300, idx156)
+	}
+	if idxCrds >= idxNodes {
+		t.Fatalf("(1×) crds: forbidden should precede (1×) nodes: forbidden, got idxCrds=%d idxNodes=%d", idxCrds, idxNodes)
+	}
 	if strings.Contains(out, "pv: forbidden") {
 		t.Fatalf("only five messages may be listed:\n%s", out)
 	}

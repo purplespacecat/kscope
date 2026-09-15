@@ -79,8 +79,10 @@ func infoText(snap graph.Snapshot, dataDir string) string {
 	return sb.String()
 }
 
-// topErrors returns the n most frequent distinct messages as "(k×) msg",
-// ties broken by first occurrence so the output is stable across runs.
+// topErrors returns the n most frequent distinct messages as "(k×) msg".
+// Construction already yields first-occurrence order and SliceStable preserves it,
+// so the comparator's tie branch states the rule explicitly rather than deciding it today;
+// it exists so a future rewrite of how order is built cannot silently change the output.
 func topErrors(errs []string, n int) []string {
 	count := map[string]int{}
 	first := map[string]int{}
