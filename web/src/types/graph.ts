@@ -34,6 +34,8 @@ export interface GraphNode {
   labels?: Record<string, string>;
   /** Absent on snapshots taken before milestone 1. */
   health?: Health;
+  /** Short status word behind a non-healthy health, e.g. CrashLoopBackOff. */
+  reason?: string;
   /** Logical node with no API object behind it (cluster root, k3s control-plane). */
   synthetic?: boolean;
   /** Copy-paste command to fetch this object live. */

@@ -217,9 +217,12 @@ the exact number for the snapshot at hand rather than the flat 1024.
    within a level, healthy before unhealthy, then kind, then name.
 
 Every removal is counted into one marker: `… truncated: N nodes, M edges
-omitted`. Because the order is total, two implementations that both fit the
-budget must produce the *same* survivors — and the test in §8.2 asserts which
-nodes those are, not merely that the output is short enough.
+omitted`. The four sort keys do not always separate two rows — same level,
+same kind, same name, different namespaces ties on all of them — and it is a
+stable sort over the tree's own order that then decides. So the survivors are
+deterministic and reproducible for a given input, not re-derivable from the
+ordering rules alone; the test in §8.2 asserts which nodes they are, not
+merely that the output is short enough.
 
 ### 4.4 What each node carries
 
