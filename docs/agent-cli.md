@@ -469,13 +469,16 @@ Two changes, in order.
 
 | File | Change |
 | --- | --- |
-| `internal/graph/view.go` | new — pure projection: `Neighbourhood()`, `View.Text()`, the §4.3 order |
+| `internal/graph/view.go` | new — pure projection: `Neighbourhood()` returning `Rendered{Text, OmittedNodes, OmittedEdges}`, the §4.3 order |
 | `internal/graph/view_test.go` | new — table tests incl. the budget survivors case |
 | `internal/graph/focus.go` | `ResolveCandidates`; `ResolveNode` unchanged |
 | `internal/graph/focus_test.go` | candidates cases |
-| `internal/cli/commands.go` | new — `map`/`find`/`info`/`manifest`, two-pass parse, exit codes |
-| `internal/cli/commands_test.go` | new — stdout/stderr/exit-code assertions |
-| `cmd/kscope/main.go` | dispatch table (§3.1); `--context`, `--timeout`, `--discover-all-namespaces` on one-shot mode |
+| `internal/cli/cli.go` | new — the subcommand registry, two-pass parse, exit codes, the §5.2 footer, miss and refresh messages |
+| `internal/cli/cmd_map.go`, `cmd_find.go`, `cmd_info.go`, `cmd_manifest.go` | new — one file per subcommand, each registering itself |
+| `internal/cli/cli_test.go` | new — stdout/stderr/exit-code assertions |
+| `cmd/kscope/main.go` | `run()` over explicit streams; `--context`, `--timeout`, `--discover-all-namespaces` on one-shot mode |
+| `cmd/kscope/scope.go` | new — `isSubcommand` (the §3.1 dispatch) and `oneShotScope` |
+| `cmd/kscope/scope_test.go`, `main_test.go` | new — dispatch, scope and stream/exit-code cases |
 | `packaging/nfpm.yaml` | one `contents` entry for `/usr/bin/kscope` |
 | `scripts/package.sh` | `go build ./cmd/kscope` after `wails build`, before nfpm |
 | `README.md` | subcommand usage, new one-shot flags, the `CLAUDE.md` snippet of §6 |
