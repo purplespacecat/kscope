@@ -187,17 +187,3 @@ func humanAge(d time.Duration) string {
 		return strconv.Itoa(days) + "d" + strconv.Itoa(h) + "h"
 	}
 }
-
-// Placeholder until Task 8: enough of "info" for the skeleton's tests.
-func init() {
-	register(command{name: "info", synopsis: "kscope info [--data-dir DIR]", run: func(args []string, io IO) int {
-		c := newFlags("info", "kscope info [--data-dir DIR]", io)
-		if _, code, done := c.parse(args, io); done {
-			return code
-		}
-		if _, _, code := loadSnapshot(c.dataDir, io); code != ExitOK {
-			return code
-		}
-		return ExitOK
-	}})
-}

@@ -122,3 +122,64 @@ func TestFooter(t *testing.T) {
 		t.Fatalf("empty scope must render as all: %q", footer(snap, "/data"))
 	}
 }
+
+func infoSnapshot() graph.Snapshot {
+	errs := []string{}
+	for i := 0; i < 700; i++ {
+		errs = append(errs, "list pods in ns a: rate limited")
+	}
+	for i := 0; i < 300; i++ {
+		errs = append(errs, "list secrets in ns a: rate limited")
+	}
+	// Four messages that each occur once, in this order; two must make the
+	// top five and be listed in first-occurrence order.
+	errs = append(errs, "crds: forbidden", "nodes: forbidden", "pv: forbidden", "sc: forbidden")
+	for i := 0; i < 156; i++ {
+		errs = append(errs, "list configmaps in ns a: rate limited")
+	}
+	return graph.Snapshot{
+		Timestamp: time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC),
+		Scope:     graph.Scope{Context: "dev/ci1", Namespaces: []string{"a"}, IncludeInfra: true, IncludeCRDs: true},
+		Cluster:   graph.ClusterMeta{Context: "dev/ci1", Server: "https://k8s.example", Version: "v1.34.9-eks", Distro: ""},
+		Nodes:     []graph.Node{{ID: "n1", Kind: "Pod"}, {ID: "n2", Kind: "Pod"}, {ID: "n3", Kind: "Secret"}},
+		Edges:     []graph.Edge{{ID: "e1"}},
+		Stats:     graph.Stats{Counts: map[string]int{"Pod": 2, "Secret": 1}, DurationMs: 30012, Errors: errs},
+	}
+}
+
+func TestInfo_SummarisesErrorsInsteadOfListingThem(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, infoSnapshot())
+	var b bufs
+	if code := Run([]string{"info", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	out := b.out.String()
+	for _, want := range []string{
+		"cluster   dev/ci1 (v1.34.9-eks)",
+		"scope     ns=[a] infra=true crds=true",
+		"3 nodes / 1 edges",
+		"kinds     Pod 2, Secret 1",
+		"errors    1160 — 5 most frequent:",
+		"(700×) list pods in ns a: rate limited",
+		"(300×) list secrets in ns a: rate limited",
+		"(156×) list configmaps in ns a: rate limited",
+		"(1×) crds: forbidden",
+		"(1×) nodes: forbidden",
+		"snapshot 4h12m old · context=dev/ci1 · ns=[a] · data=" + dir,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "pv: forbidden") {
+		t.Fatalf("only five messages may be listed:\n%s", out)
+	}
+	if n := strings.Count(out, "\n"); n > 14 {
+		t.Fatalf("info must stay short, got %d lines:\n%s", n, out)
+	}
+	if b.err.Len() != 0 {
+		t.Fatalf("stderr must be empty on success: %q", b.err.String())
+	}
+}
