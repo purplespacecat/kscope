@@ -157,7 +157,10 @@ func (c *common) printUsage(w io.Writer) {
 // state with a known next step, not an error (spec §5.3).
 func loadSnapshot(dataDir string, io IO) (graph.Snapshot, *graph.Store, int) {
 	store := graph.NewStore(filepath.Join(dataDir, "latest.json"))
-	if err := store.Load(); err != nil {
+	// LoadGraph, not Load: map, find and info never touch a manifest, and the
+	// sidecar holds every captured object's YAML. manifest gets its own
+	// through Store.Manifest, which reads the sidecar on demand.
+	if err := store.LoadGraph(); err != nil {
 		fmt.Fprintf(io.Stderr, "kscope: read %s: %v\n", dataDir, err)
 		return graph.Snapshot{}, nil, ExitError
 	}

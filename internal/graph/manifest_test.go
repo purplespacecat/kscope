@@ -1,7 +1,11 @@
 package graph
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -80,4 +84,100 @@ func TestRedactPath_NestedAndMissing(t *testing.T) {
 	if _, ok := spec["not"]; ok {
 		t.Fatalf("redactPath must not create missing paths")
 	}
+}
+
+// LoadGraph skips the manifests sidecar; Manifest must still find one,
+// reading the file on demand. Load's own behaviour is unchanged.
+func TestStore_LoadGraphDefersTheSidecar(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latest.json")
+	if err := NewStore(path).Set(Snapshot{
+		Nodes:     []Node{{ID: "n1", Kind: "Deployment", Name: "web"}},
+		Manifests: map[string]string{"n1": "kind: Deployment\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewStore(path)
+	if err := s.LoadGraph(); err != nil {
+		t.Fatalf("LoadGraph: %v", err)
+	}
+	snap, err := s.Get()
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(snap.Nodes) != 1 {
+		t.Fatalf("the graph must be loaded: %+v", snap.Nodes)
+	}
+	if snap.Manifests != nil {
+		t.Fatalf("LoadGraph must not read the sidecar, got %v", snap.Manifests)
+	}
+	y, err := s.Manifest("n1")
+	if err != nil {
+		t.Fatalf("Manifest through the lazy path: %v", err)
+	}
+	if y != "kind: Deployment\n" {
+		t.Fatalf("manifest = %q", y)
+	}
+	if _, err := s.Manifest("nope"); !errors.Is(err, ErrNoManifest) {
+		t.Fatalf("unknown node: err = %v, want ErrNoManifest", err)
+	}
+}
+
+// A snapshot with no sidecar at all (pre-M2, or a hand-written latest.json)
+// loads, and asking for a manifest is ErrNoManifest rather than a read error.
+func TestStore_MissingSidecarIsNotAnError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latest.json")
+	if err := os.WriteFile(path, []byte(`{"nodes":[{"id":"n1"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		load func(*Store) error
+	}{
+		{"Load", (*Store).Load},
+		{"LoadGraph", (*Store).LoadGraph},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStore(path)
+			if err := tc.load(s); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if _, err := s.Manifest("n1"); !errors.Is(err, ErrNoManifest) {
+				t.Fatalf("err = %v, want ErrNoManifest", err)
+			}
+		})
+	}
+}
+
+// Manifest hydrates under the write lock; concurrent first calls must not
+// race or deadlock. Run with -race.
+func TestStore_ConcurrentFirstManifestCalls(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "latest.json")
+	if err := NewStore(path).Set(Snapshot{
+		Nodes:     []Node{{ID: "n1"}},
+		Manifests: map[string]string{"n1": "kind: Deployment\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(path)
+	if err := s.LoadGraph(); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.Manifest("n1"); err != nil {
+				t.Errorf("Manifest: %v", err)
+			}
+			if _, err := s.Get(); err != nil {
+				t.Errorf("Get: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
 }

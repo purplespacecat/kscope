@@ -931,3 +931,36 @@ func TestFind_FiltersSnapshotAndFlagText(t *testing.T) {
 		t.Errorf("stderr echoed the flag unfiltered: %q", b.err.String())
 	}
 }
+
+// map, find and info never read a manifest, so they must work against a data
+// dir with no sidecar at all — and, since they now load the graph alone, they
+// no longer pay to decode one when it is there.
+func TestReadCommandsWorkWithoutTheManifestsSidecar(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(2))
+	if err := os.Remove(filepath.Join(dir, "manifests.json")); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"info", "--data-dir", dir},
+		{"find", "--kind", "pod", "--data-dir", dir},
+		{"map", "web", "--kind", "deployment", "--data-dir", dir},
+	} {
+		var b bufs
+		if code := Run(args, b.io()); code != ExitOK {
+			t.Errorf("%v: code = %d (stderr %q)", args, code, b.err.String())
+		}
+		if b.out.Len() == 0 {
+			t.Errorf("%v: expected output on stdout", args)
+		}
+	}
+	// manifest is the one that needs the sidecar, and says so recoverably.
+	var b bufs
+	if code := Run([]string{"manifest", "web", "--kind", "deployment", "--data-dir", dir}, b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d (stderr %q)", code, ExitMiss, b.err.String())
+	}
+	if !strings.Contains(b.err.String(), "no manifest") {
+		t.Fatalf("stderr = %q", b.err.String())
+	}
+}
