@@ -320,11 +320,16 @@ func resolveOne(snap graph.Snapshot, ref graph.NodeRef, dataDir string, io IO) (
 		fmt.Fprint(io.Stderr, missMessage(what, snap, dataDir, ref.Namespace))
 		return graph.Node{}, ExitMiss
 	}
-	disambiguator := "--kind"
-	if ref.Kind != "" {
-		disambiguator = "--namespace"
+	// Suggesting a flag the caller already passed is no help, so when both
+	// hints are already set, say the candidates cannot be told apart by them.
+	advice := "Add --kind to choose one:"
+	switch {
+	case ref.Kind != "" && ref.Namespace != "":
+		advice = "--kind and --namespace are both set; these candidates are indistinguishable by the available flags:"
+	case ref.Kind != "":
+		advice = "Add --namespace to choose one:"
 	}
-	fmt.Fprintf(io.Stderr, "Ambiguous: '%s' matches %d resources in the snapshot.\nAdd %s to choose one:\n", ref.Name, len(cands), disambiguator)
+	fmt.Fprintf(io.Stderr, "Ambiguous: '%s' matches %d resources in the snapshot.\n%s\n", ref.Name, len(cands), advice)
 	for _, n := range cands {
 		ns := ""
 		if n.Namespace != "" {

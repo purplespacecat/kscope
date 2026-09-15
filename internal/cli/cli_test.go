@@ -838,3 +838,50 @@ func TestRefreshHint_OmitsAnUnknownContext(t *testing.T) {
 		t.Fatalf("the rest of the command must be intact: %q", hint)
 	}
 }
+
+// find validates --limit and --health before it reads the store; map must
+// report a bad --budget or --depth the same way, rather than resolving the
+// name first and answering an also-invalid invocation with a miss.
+func TestMap_ArgumentErrorsPrecedeResolution(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(1))
+	cases := []struct {
+		args []string
+		flag string
+	}{
+		{[]string{"map", "ghost", "--budget", "10", "--data-dir", dir}, "--budget"},
+		{[]string{"map", "ghost", "--depth", "9", "--data-dir", dir}, "--depth"},
+		{[]string{"map", "ghost", "--depth", "-1", "--data-dir", dir}, "--depth"},
+	}
+	for _, c := range cases {
+		var b bufs
+		if code := Run(c.args, b.io()); code != ExitError {
+			t.Errorf("%v: code = %d, want %d (the argument is wrong, not the scope)", c.args, code, ExitError)
+		}
+		if b.out.Len() != 0 {
+			t.Errorf("%v: stdout must stay empty, got %q", c.args, b.out.String())
+		}
+		if !strings.Contains(b.err.String(), c.flag) {
+			t.Errorf("%v: stderr must name %s, got %q", c.args, c.flag, b.err.String())
+		}
+	}
+}
+
+// An ambiguity hint that suggests a flag the caller already passed is no
+// help; with both set, the candidates simply cannot be told apart by them.
+func TestResolveOne_AmbiguityAdviceWhenBothHintsAreSet(t *testing.T) {
+	snap := mapSnapshot(1)
+	snap.Nodes = append(snap.Nodes, graph.Node{ID: "apps/deployment/app/web-2", Kind: "Deployment", Name: "web", Namespace: "app"})
+	var b bufs
+	if _, code := resolveOne(snap, graph.NodeRef{Name: "web", Kind: "deployment", Namespace: "app"}, "/d", b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d", code, ExitMiss)
+	}
+	e := b.err.String()
+	if strings.Contains(e, "Add --namespace") || strings.Contains(e, "Add --kind") {
+		t.Fatalf("must not suggest a flag that is already set: %q", e)
+	}
+	if !strings.Contains(e, "indistinguishable by the available flags") {
+		t.Fatalf("stderr = %q", e)
+	}
+}
