@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -359,5 +361,243 @@ func TestRefreshHint_FallsBackToClusterContext(t *testing.T) {
 	hint := refreshHint(snap, "/d", "")
 	if !strings.Contains(hint, "--context dev/ci1") {
 		t.Fatalf("refreshHint must fall back to Cluster.Context: %q", hint)
+	}
+}
+
+// mapSnapshot: Cluster → ns app → Deployment web → ReplicaSet → pods, a
+// Service also named web (for ambiguity), a Secret the pods mount, and a
+// synthetic control-plane node (for manifest). pods controls fan-out.
+func mapSnapshot(pods int) graph.Snapshot {
+	n := []graph.Node{
+		{ID: "cluster", Kind: "Cluster", Name: "dev/ci1", Health: graph.HealthHealthy, Synthetic: true},
+		{ID: "core/namespace/app", Kind: "Namespace", Name: "app", ParentID: "cluster", Health: graph.HealthHealthy},
+		{ID: "apps/deployment/app/web", Kind: "Deployment", Name: "web", Namespace: "app", ParentID: "core/namespace/app", Health: graph.HealthHealthy,
+			Kubectl: "kubectl --context dev/ci1 -n app get deployment web -o yaml"},
+		{ID: "apps/replicaset/app/web-rs", Kind: "ReplicaSet", Name: "web-rs", Namespace: "app", ParentID: "apps/deployment/app/web", Health: graph.HealthHealthy},
+		{ID: "core/service/app/web", Kind: "Service", Name: "web", Namespace: "app", ParentID: "core/namespace/app", Health: graph.HealthHealthy},
+		{ID: "core/secret/app/db", Kind: "Secret", Name: "db", Namespace: "app", ParentID: "core/namespace/app", Health: graph.HealthHealthy},
+	}
+	var e []graph.Edge
+	for i := 0; i < pods; i++ {
+		id := fmt.Sprintf("core/pod/app/web-rs-%03d", i)
+		n = append(n, graph.Node{ID: id, Kind: "Pod", Name: fmt.Sprintf("web-rs-%03d", i), Namespace: "app", ParentID: "apps/replicaset/app/web-rs", Health: graph.HealthHealthy})
+		e = append(e, graph.Edge{ID: id + " mounts", Kind: graph.EdgeMounts, Source: id, Target: "core/secret/app/db"})
+	}
+	return graph.Snapshot{
+		Timestamp: time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC),
+		Scope:     graph.Scope{Context: "dev/ci1", Namespaces: []string{"app"}, IncludeInfra: true, IncludeCRDs: true},
+		Cluster:   graph.ClusterMeta{Context: "dev/ci1"},
+		Nodes:     n,
+		Edges:     e,
+		Manifests: map[string]string{"apps/deployment/app/web": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n"},
+	}
+}
+
+func TestMap_RendersTheNeighbourhood(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(2))
+	for _, args := range [][]string{
+		{"map", "web", "--kind", "deployment", "--data-dir", dir},
+		{"map", "--kind", "deployment", "--data-dir", dir, "web"},
+	} {
+		var b bufs
+		if code := Run(args, b.io()); code != ExitOK {
+			t.Fatalf("%v: code = %d: %s", args, code, b.err.String())
+		}
+		out := b.out.String()
+		for _, want := range []string{
+			"Cluster dev/ci1", "└─ ns app", "Deployment web", "✓ healthy",
+			"kubectl --context dev/ci1 -n app get deployment web -o yaml",
+			"ReplicaSet web-rs", "Pod web-rs-000", "mounts → Secret db",
+			"\n8 nodes / 2 edges in scope\n",
+			"snapshot 4h12m old · context=dev/ci1 · ns=[app] · data=" + dir + "\n",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v: missing %q in:\n%s", args, want, out)
+			}
+		}
+		if !strings.HasSuffix(out, "data="+dir+"\n") {
+			t.Fatalf("footer must be the last line:\n%s", out)
+		}
+		if b.err.Len() != 0 {
+			t.Fatalf("stderr must be empty on success: %q", b.err.String())
+		}
+	}
+}
+
+func TestMap_AmbiguousIsExit2WithCandidates(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(1))
+	var b bufs
+	// Deployment and Service are both "web" in ns app.
+	if code := Run([]string{"map", "web", "--data-dir", dir}, b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d", code, ExitMiss)
+	}
+	if b.out.Len() != 0 {
+		t.Fatalf("ambiguity must print no map: %q", b.out.String())
+	}
+	e := b.err.String()
+	for _, want := range []string{"Ambiguous: 'web' matches 2 resources", "Add --kind", "Deployment", "Service", "-n app"} {
+		if !strings.Contains(e, want) {
+			t.Errorf("stderr missing %q:\n%s", want, e)
+		}
+	}
+}
+
+func TestMap_MissIsExit2(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(1))
+	var b bufs
+	if code := Run([]string{"map", "cube", "--namespace", "cube", "--data-dir", dir}, b.io()); code != ExitMiss {
+		t.Fatalf("code = %d, want %d", code, ExitMiss)
+	}
+	if !strings.Contains(b.err.String(), "No resource matching name=cube namespace=cube") || !strings.Contains(b.err.String(), "--discover-namespaces=app,cube") {
+		t.Fatalf("stderr: %q", b.err.String())
+	}
+}
+
+// budgetPressureSnapshot builds a Deployment with rsCount ReplicaSets, each
+// with podsPerRS Pods — deliberately kept below groupAt (3) per ReplicaSet so
+// the Pod-grouping rollup never collapses them, and ReplicaSets themselves are
+// never grouped (they have children, so allLeaves is false). Content therefore
+// grows linearly with rsCount instead of being capped to a small "Kind (N)"
+// summary the way mapSnapshot's single-parent pod fan-out is — this is what
+// makes it possible to force real per-row truncation at a chosen budget.
+func budgetPressureSnapshot(rsCount, podsPerRS int) graph.Snapshot {
+	n := []graph.Node{
+		{ID: "cluster", Kind: "Cluster", Name: "dev/ci1", Health: graph.HealthHealthy, Synthetic: true},
+		{ID: "core/namespace/app", Kind: "Namespace", Name: "app", ParentID: "cluster", Health: graph.HealthHealthy},
+		{ID: "apps/deployment/app/web", Kind: "Deployment", Name: "web", Namespace: "app", ParentID: "core/namespace/app", Health: graph.HealthHealthy,
+			Kubectl: "kubectl --context dev/ci1 -n app get deployment web -o yaml"},
+	}
+	for i := 0; i < rsCount; i++ {
+		rsID := fmt.Sprintf("apps/replicaset/app/web-rs-%03d", i)
+		n = append(n, graph.Node{ID: rsID, Kind: "ReplicaSet", Name: fmt.Sprintf("web-rs-%03d", i), Namespace: "app", ParentID: "apps/deployment/app/web", Health: graph.HealthHealthy})
+		for j := 0; j < podsPerRS; j++ {
+			podID := fmt.Sprintf("core/pod/app/web-rs-%03d-%d", i, j)
+			n = append(n, graph.Node{ID: podID, Kind: "Pod", Name: fmt.Sprintf("web-rs-%03d-%d", i, j), Namespace: "app", ParentID: rsID, Health: graph.HealthHealthy})
+		}
+	}
+	return graph.Snapshot{
+		Timestamp: time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC),
+		Scope:     graph.Scope{Context: "dev/ci1", Namespaces: []string{"app"}, IncludeInfra: true, IncludeCRDs: true},
+		Cluster:   graph.ClusterMeta{Context: "dev/ci1"},
+		Nodes:     n,
+	}
+}
+
+func TestMap_BudgetCoversTheWholeStdout(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	// The brief's own draft of this test used mapSnapshot(80) at --budget 1024.
+	// Neither survives: mapSnapshot's 80 Pods share one ReplicaSet parent, so
+	// they collapse to a small fixed-size "Pods (80)" summary regardless of
+	// budget (groupAt=3 triggers well before any byte limit is even
+	// consulted) — content stays ~560 bytes, far under any valid budget, so
+	// that fixture cannot actually exercise the Reserve arithmetic: it would
+	// pass identically whether Reserve were wired correctly or not. And
+	// --budget 1024 (graph.MinBudget) is not reachable at all once Reserve is
+	// non-zero: Neighbourhood rejects any request where budget-Reserve<
+	// MinBudget, and the footer is never empty (see graph.ErrSkeleton's test
+	// in internal/graph/view_test.go and the guard added alongside it in
+	// commit 4caa348).
+	//
+	// budgetPressureSnapshot avoids the grouping collapse (see its doc
+	// comment), so its rendered content genuinely scales past the chosen
+	// budget and must be trimmed row by row. At --budget 2048 this fixture's
+	// natural (untrimmed) content is ~2165 bytes — bigger than the budget
+	// even before the ~155-byte tail is reserved — so a correct Reserve
+	// forces real truncation that keeps stdout within budget, while
+	// Reserve:0 (Step 5's second sabotage) lets content through untrimmed and
+	// overshoots once the tail is appended. That distinction is exactly what
+	// this test must catch.
+	writeSnapshot(t, dir, budgetPressureSnapshot(13, 2))
+	var b bufs
+	const budget = 2048
+	if code := Run([]string{"map", "web", "--kind", "deployment", "--depth", "3", "--budget", strconv.Itoa(budget), "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	if b.out.Len() > budget {
+		t.Fatalf("stdout is %d bytes, budget was %d:\n%s", b.out.Len(), budget, b.out.String())
+	}
+	if !strings.Contains(b.out.String(), "… truncated:") {
+		t.Fatalf("this fixture at --budget %d should have needed truncation:\n%s", budget, b.out.String())
+	}
+}
+
+func TestMap_BadArgumentsAreExit1(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(1))
+	for _, args := range [][]string{
+		{"map", "--data-dir", dir},                 // no name
+		{"map", "web", "extra", "--data-dir", dir}, // two names
+		{"map", "web", "--kind", "deployment", "--depth", "9", "--data-dir", dir},
+		{"map", "web", "--kind", "deployment", "--budget", "10", "--data-dir", dir},
+	} {
+		var b bufs
+		if code := Run(args, b.io()); code != ExitError {
+			t.Errorf("%v: code = %d, want 1 (stderr %q)", args, code, b.err.String())
+		}
+		if b.out.Len() != 0 {
+			t.Errorf("%v: stdout must stay empty on error", args)
+		}
+	}
+}
+
+// longChainSnapshot mirrors graph's longChainFixture (internal/graph/view_test.go):
+// a five-deep chain built from unrealistically long names, so the "skeleton"
+// (ancestors + focus + kubectl) alone exceeds --budget 4096. Namespace is kept
+// short deliberately: it is the one name that also lands in the footer, and a
+// long one would inflate Reserve enough to trip the earlier ErrBudget guard
+// (budget-Reserve < MinBudget) before ErrSkeleton's own check ever runs — the
+// CLI computes Reserve itself from the footer, so a naive "reuse the ns=63
+// fixture at --budget 1024" does not reach ErrSkeleton through the CLI at
+// all, only ErrBudget.
+func longChainSnapshot() (graph.Snapshot, string, string) {
+	longNS := strings.Repeat("n", 12)
+	longDep := strings.Repeat("d", 2000)
+	longRS := strings.Repeat("r", 2000)
+	longPod := strings.Repeat("p", 2000)
+	nsID := "core/namespace/" + longNS
+	depID := "apps/deployment/" + longNS + "/" + longDep
+	rsID := "apps/replicaset/" + longNS + "/" + longRS
+	podID := "core/pod/" + longNS + "/" + longPod
+	snap := graph.Snapshot{
+		Timestamp: time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC),
+		Scope:     graph.Scope{Context: "dev/ci1", Namespaces: []string{longNS}, IncludeInfra: true, IncludeCRDs: true},
+		Cluster:   graph.ClusterMeta{Context: "dev/ci1"},
+		Nodes: []graph.Node{
+			{ID: "cluster", Kind: "Cluster", Name: "dev/ci1", Health: graph.HealthHealthy, Synthetic: true},
+			{ID: nsID, Kind: "Namespace", Name: longNS, ParentID: "cluster", Health: graph.HealthHealthy},
+			{ID: depID, Kind: "Deployment", Name: longDep, Namespace: longNS, ParentID: nsID, Health: graph.HealthHealthy},
+			{ID: rsID, Kind: "ReplicaSet", Name: longRS, Namespace: longNS, ParentID: depID, Health: graph.HealthHealthy},
+			{ID: podID, Kind: "Pod", Name: longPod, Namespace: longNS, ParentID: rsID, Health: graph.HealthHealthy,
+				Kubectl: "kubectl --context dev/ci1 -n " + longNS + " get pod " + longPod + " -o yaml " + strings.Repeat("x", 2000)},
+		},
+	}
+	return snap, longPod, longNS
+}
+
+// This is the ErrSkeleton addition (task-10-brief did not have this case; it
+// predates ErrSkeleton). --budget 1024 itself is not reachable through the
+// CLI for this: at Budget==MinBudget, any non-empty Reserve (the footer is
+// never empty) already makes budget-Reserve<MinBudget, so Neighbourhood
+// returns ErrBudget before its skeleton check ever runs — a strictly earlier
+// guard than the one this test targets. --budget 4096 leaves enough headroom
+// past that guard for the skeleton itself to be the thing that's too big.
+func TestMap_SkeletonTooLargeForBudgetIsExit1(t *testing.T) {
+	dir := t.TempDir()
+	snap, longPod, longNS := longChainSnapshot()
+	writeSnapshot(t, dir, snap)
+	var b bufs
+	if code := Run([]string{"map", longPod, "--namespace", longNS, "--budget", "4096", "--data-dir", dir}, b.io()); code != ExitError {
+		t.Fatalf("code = %d, want %d: stdout=%q stderr=%q", code, ExitError, b.out.String(), b.err.String())
+	}
+	if b.out.Len() != 0 {
+		t.Fatalf("stdout must stay empty on error: %q", b.out.String())
+	}
+	if !strings.Contains(b.err.String(), graph.ErrSkeleton.Error()) {
+		t.Fatalf("stderr must name the error: %q", b.err.String())
 	}
 }

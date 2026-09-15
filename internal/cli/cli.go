@@ -231,6 +231,41 @@ func containsString(xs []string, x string) bool {
 	return false
 }
 
+// resolveOne turns a name (+ namespace, + kind hint) into exactly one node.
+// Zero candidates is a miss; more than one is ambiguity. Both are exit 2 and
+// both leave stdout untouched — an agent must never receive the wrong
+// resource with a success code (spec §2, §5.2).
+func resolveOne(snap graph.Snapshot, ref graph.NodeRef, dataDir string, io IO) (graph.Node, int) {
+	cands := graph.ResolveCandidates(snap.Nodes, ref)
+	switch len(cands) {
+	case 1:
+		return cands[0], ExitOK
+	case 0:
+		what := "name=" + ref.Name
+		if ref.Namespace != "" {
+			what += " namespace=" + ref.Namespace
+		}
+		if ref.Kind != "" {
+			what += " kind=" + ref.Kind
+		}
+		fmt.Fprint(io.Stderr, missMessage(what, snap, dataDir, ref.Namespace))
+		return graph.Node{}, ExitMiss
+	}
+	disambiguator := "--kind"
+	if ref.Kind != "" {
+		disambiguator = "--namespace"
+	}
+	fmt.Fprintf(io.Stderr, "Ambiguous: '%s' matches %d resources in the snapshot.\nAdd %s to choose one:\n", ref.Name, len(cands), disambiguator)
+	for _, n := range cands {
+		ns := ""
+		if n.Namespace != "" {
+			ns = "-n " + n.Namespace
+		}
+		fmt.Fprintf(io.Stderr, "  %-16s %-40s %s\n", n.Kind, n.Name, ns)
+	}
+	return graph.Node{}, ExitMiss
+}
+
 // missMessage explains a miss the way an agent can act on: what was asked,
 // what the snapshot covers, and the command that would widen it.
 func missMessage(what string, snap graph.Snapshot, dataDir, extraNS string) string {
