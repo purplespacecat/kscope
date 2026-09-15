@@ -221,6 +221,48 @@ func TestInfo_SummarisesErrorsInsteadOfListingThem(t *testing.T) {
 	}
 }
 
+// info takes no positionals, so a stray one is exit 1 like find's. Accepting
+// it would answer `kscope info web-1` with the snapshot summary and exit 0,
+// which reads as an answer about web-1.
+func TestInfo_RejectsStrayPositionals(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, infoSnapshot())
+	var b bufs
+	if code := Run([]string{"info", "web-1", "extra", "--data-dir", dir}, b.io()); code != ExitError {
+		t.Fatalf("code = %d, want %d", code, ExitError)
+	}
+	if b.out.Len() != 0 {
+		t.Fatalf("stdout must stay empty: %q", b.out.String())
+	}
+	if !strings.Contains(b.err.String(), `unexpected argument "web-1"`) {
+		t.Fatalf("stderr = %q", b.err.String())
+	}
+}
+
+// The cluster line and the footer must name the same context. Cluster.Context
+// is what discovery reached and Scope.Context what it was asked for; a
+// snapshot carrying only the latter used to print a blank cluster line above
+// a populated footer.
+func TestInfo_ClusterLineAgreesWithTheFooter(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	snap := infoSnapshot()
+	snap.Cluster.Context = "" // partial snapshot: only the requested context survived
+	writeSnapshot(t, dir, snap)
+	var b bufs
+	if code := Run([]string{"info", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	out := b.out.String()
+	if !strings.Contains(out, "cluster   dev/ci1 (") {
+		t.Fatalf("cluster line does not name the context:\n%s", out)
+	}
+	if !strings.Contains(out, "context=dev/ci1") {
+		t.Fatalf("footer does not name the context:\n%s", out)
+	}
+}
+
 func findSnapshot() graph.Snapshot {
 	return graph.Snapshot{
 		Timestamp: time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC),
@@ -632,6 +674,11 @@ func TestMap_SkeletonTooLargeForBudgetIsExit1(t *testing.T) {
 	}
 	if !strings.Contains(b.err.String(), graph.ErrSkeleton.Error()) {
 		t.Fatalf("stderr must name the error: %q", b.err.String())
+	}
+	// The up-front floor cannot predict this one, so the message has to say
+	// what the caller can do about it rather than only what went wrong.
+	if !strings.Contains(b.err.String(), "retry with a --budget above 4096") {
+		t.Fatalf("stderr must name the fix: %q", b.err.String())
 	}
 }
 

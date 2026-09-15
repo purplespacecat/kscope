@@ -19,8 +19,17 @@ func init() {
 
 func runInfo(args []string, io IO) int {
 	c := newFlags("info", infoSynopsis, io)
-	if _, code, done := c.parse(args, io); done {
+	pos, code, done := c.parse(args, io)
+	if done {
 		return code
+	}
+	// info takes no positionals. Accepting and ignoring them would make
+	// `kscope info web-1` print the snapshot summary and exit 0, which reads
+	// as an answer about web-1; find rejects strays and map and manifest
+	// require exactly one, so this is the same contract.
+	if len(pos) > 0 {
+		fmt.Fprintf(io.Stderr, "kscope info: unexpected argument %q\n", pos[0])
+		return ExitError
 	}
 	snap, _, code := loadSnapshot(c.dataDir, io)
 	if code != ExitOK {
@@ -40,7 +49,10 @@ func infoText(snap graph.Snapshot, dataDir string) string {
 	if cl.Distro != "" {
 		ver += ", " + cl.Distro
 	}
-	fmt.Fprintf(&sb, "cluster   %s (%s)\n", cl.Context, ver)
+	// snapshotContext, not cl.Context: the footer uses it, and a snapshot
+	// that recorded only what was asked for would otherwise print a blank
+	// cluster line above a populated footer.
+	fmt.Fprintf(&sb, "cluster   %s (%s)\n", snapshotContext(snap), ver)
 	if cl.Server != "" {
 		fmt.Fprintf(&sb, "server    %s\n", cl.Server)
 	}

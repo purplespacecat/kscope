@@ -64,12 +64,18 @@ func runMap(args []string, io IO) int {
 	}
 
 	r, err := graph.Neighbourhood(snap, focus.ID, graph.ViewOptions{Depth: *depth, Budget: *budget, Reserve: len(tail)})
-	switch {
-	case errors.Is(err, graph.ErrDepth), errors.Is(err, graph.ErrBudget), errors.Is(err, graph.ErrSkeleton):
-		fmt.Fprintf(io.Stderr, "kscope map: %v\n", err)
-		return ExitError
-	case err != nil:
-		fmt.Fprintf(io.Stderr, "kscope map: %v\n", err)
+	if err != nil {
+		// The check above names the floor for the common case. ErrSkeleton is
+		// the case it cannot predict: this focus sits deep enough that its own
+		// ancestor chain and focus line are longer than that floor, and those
+		// are never truncated — so nothing but a larger --budget helps, and
+		// how much larger depends on the resource.
+		hint := ""
+		if errors.Is(err, graph.ErrSkeleton) {
+			hint = fmt.Sprintf(" — the ancestors of %s %s and its own line do not fit; retry with a --budget above %d",
+				focus.Kind, focus.Name, *budget)
+		}
+		fmt.Fprintf(io.Stderr, "kscope map: %v%s\n", err, hint)
 		return ExitError
 	}
 	fmt.Fprint(io.Stdout, r.Text, tail)
