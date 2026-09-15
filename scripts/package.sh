@@ -35,6 +35,16 @@ BIN="$ROOT/cmd/kscope-desktop/build/bin/kscope-desktop"
     exit 1
 }
 
+echo "==> building CLI"
+# After wails build on purpose: that step runs the frontend build into
+# web/dist, which cmd/kscope embeds. Built earlier, the CLI's server mode
+# would serve an empty SPA.
+go build -o bin/kscope ./cmd/kscope
+[[ -x bin/kscope ]] || {
+    echo "error: expected binary at bin/kscope" >&2
+    exit 1
+}
+
 echo "==> packaging $VERSION"
 mkdir -p dist
 for pkg in rpm deb; do

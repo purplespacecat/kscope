@@ -27,6 +27,8 @@ license: MIT
 contents:
   - src: ./cmd/kscope-desktop/build/bin/kscope-desktop
     dst: /usr/bin/kscope-desktop
+  - src: ./bin/kscope
+    dst: /usr/bin/kscope
   - src: ./packaging/kscope.desktop
     dst: /usr/share/applications/kscope.desktop
   - src: ./cmd/kscope-desktop/build/appicon.png

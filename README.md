@@ -129,10 +129,37 @@ go build -o bin/kscope ./cmd/kscope && ./bin/kscope --port 8080
 
 # One-shot CLI: run a discovery, write the snapshot, exit (cron-friendly)
 go run ./cmd/kscope --discover-namespaces=default,monitoring
+
+# Agent-facing subcommands: read the snapshot, print compact text, exit
+kscope info                                   # what is loaded, how stale, from where
+kscope find --name-contains exporter          # locate a resource
+kscope map gitlab-ci-exporter --kind deployment   # its neighbourhood, ≤ 8 KB
+kscope manifest gitlab-ci-exporter --kind deployment
 ```
 
 Both binaries share one snapshot store, so a cron'd CLI discovery shows up in
 whichever UI you open next.
+
+### Using kscope from an AI agent
+
+`kscope map` prints one resource's place in the containment tree, what it is
+wired to, and health with reasons — a few hundred bytes instead of the raw
+snapshot or a pile of `kubectl get -o yaml`. Output never exceeds `--budget`
+bytes (default 8192). Exit codes are part of the contract: `0` printed, `2`
+out of scope or ambiguous (stderr names the fix), `3` no snapshot yet, `1`
+error. See `docs/agent-cli.md`.
+
+Paste this into the `CLAUDE.md` of any repo where the agent should reach for it:
+
+    ## Cluster map
+    `kscope map <name> [--namespace ns] [--kind k]` prints a compact map of a
+    resource: its place in the containment tree, what it is wired to, and health
+    with reasons. Prefer it over `kubectl get -o yaml` when the question is "what
+    is this connected to" or "what is unhealthy near this". Flags may come before
+    or after the name. Exit 2 means out of scope or ambiguous — read stderr, it
+    names the fix. `kscope find --name-contains <frag>` locates a resource first;
+    `kscope info` shows what scope is loaded, how stale it is, and which data dir
+    it read.
 
 ### API
 
@@ -157,6 +184,9 @@ in-process behind the webview.
 | `--focus-context/-namespace/-kind/-name` | `""` | desktop | resource to focus on launch (what the k9s plugin passes) |
 | `--port` | `8080` | server | HTTP listen port |
 | `--discover-namespaces` | `""` | server | one-shot mode: run discovery for these namespaces and exit |
+| `--discover-all-namespaces` | `false` | server | one-shot mode: every namespace (exclusive with `--discover-namespaces`) |
+| `--context` | `""` | server | one-shot mode: kubeconfig context to discover against |
+| `--timeout` | `60s` | server | one-shot mode: bound on the discovery pass |
 | `--include-infra` / `--include-crds` | `true` | server | one-shot mode: infra layer / custom resources |
 
 ¹ `~/.local/share/kscope` on Linux, `~/Library/Application Support/kscope` on

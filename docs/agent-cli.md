@@ -1,8 +1,7 @@
 # Agent interface — kscope as a CLI an agent can call
 
-Status: **designed, not implemented**. Revised after adversarial review (two
-blockers, seven majors — all addressed below). The implementation plan follows
-separately.
+Status: **implemented** (branch `feat/agent-cli`). Revised after adversarial
+review (two blockers, seven majors — all addressed below).
 
 ## 1. Problem
 
@@ -164,19 +163,20 @@ group header — forty-seven Pods mounting one Secret is one line.
 ```
 $ kscope map --kind deployment gitlab-ci-exporter
 
-ns gitlab-ci-exporter
-└─ Deployment gitlab-ci-exporter           ✓ healthy    [flux: Kustomization/infra]
-   kubectl --context dev/ci1 -n gitlab-ci-exporter get deployment gitlab-ci-exporter
-   └─ ReplicaSet ...-84f9f6f845            ✓
-      └─ Pods (47)                         ✓44 !2 ✗1
-         ├─ ...-p2jx4                      ✗ CrashLoopBackOff
-         ├─ ...-q8ln7                      ! ImagePullBackOff
-         ├─ ...-rsbpk                      ✓
-         ├─ … +44 more
-         ├─ mounts → Secret gitlab-token
-         ├─ references → ConfigMap exporter-cfg
-         ├─ uses → ServiceAccount gitlab-ci-exporter
-         └─ ← selects Service gitlab-ci-exporter
+Cluster dev/ci1
+└─ ns gitlab-ci-exporter
+   └─ Deployment gitlab-ci-exporter        ✓ healthy    [flux: Kustomization/infra]
+      kubectl --context dev/ci1 -n gitlab-ci-exporter get deployment gitlab-ci-exporter
+      └─ ReplicaSet ...-84f9f6f845         ✓
+         └─ Pods (47)                      ✓44 !2 ✗1
+            ├─ ...-p2jx4                   ✗ CrashLoopBackOff
+            ├─ ...-q8ln7                   ! ImagePullBackOff
+            ├─ ...-rsbpk                   ✓
+            ├─ … +44 more
+            ├─ mounts → Secret gitlab-token
+            ├─ references → ConfigMap exporter-cfg
+            ├─ uses → ServiceAccount gitlab-ci-exporter
+            └─ ← selects Service gitlab-ci-exporter
 
 34 nodes / 15 edges in scope
 snapshot 4h12m old · context=dev/ci1 · ns=[gitlab-ci-exporter] · data=~/.local/share/kscope
@@ -198,6 +198,14 @@ glyph-heavy output.
 `kubectl` and GitOps lines), the footer, and the truncation marker itself. This
 skeleton is bounded (~600 bytes), and `--budget` below **1024** is rejected with
 exit 1 so the guarantee "output ≤ budget" is never quietly false.
+
+That **1024** is the minimum for the projection itself; it is not the smallest
+`--budget` value `kscope map` will actually accept. The footer and the counts
+line (`N nodes / M edges in scope`) are printed after the projection but still
+reserved out of the same budget, so the true floor for any given snapshot is
+1024 plus their length. `kscope map` computes that floor up front, before
+calling the projection, and rejects a `--budget` below it with exit 1, naming
+the exact number for the snapshot at hand rather than the flat 1024.
 
 **Truncation is a total order**, applied step by step until the output fits:
 
@@ -335,7 +343,7 @@ parsing.
 | Code | Meaning |
 | --- | --- |
 | `0` | resolved and printed |
-| `1` | error — bad arguments, unknown command, unreadable data dir, malformed snapshot, `--budget` below 1024 |
+| `1` | error — bad arguments, unknown command, unreadable data dir, malformed snapshot, `--budget` below the effective minimum (1024 plus the footer and counts line for this snapshot — `kscope map` names the exact number) |
 | `2` | **recoverable miss** — no match in scope, ambiguous match, or `manifest` on a synthetic node (which has none). The §5.2 message went to stderr. |
 | `3` | **no snapshot** in the data dir — nothing has been discovered yet. The message names the one-shot command to run. |
 

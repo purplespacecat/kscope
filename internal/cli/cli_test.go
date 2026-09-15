@@ -545,6 +545,39 @@ func TestMap_BadArgumentsAreExit1(t *testing.T) {
 	}
 }
 
+// TestMap_BudgetMinimumNamesTheEffectiveFloor exercises the controller ruling
+// from Task 6: kscope map always reserves bytes for its footer and counts
+// line on top of graph.MinBudget, so --budget 1024 (the spec's documented
+// minimum) can never actually succeed. cmd_map.go must catch this up front
+// and name the real floor for this snapshot, rather than let it fall through
+// to Neighbourhood's generic graph.ErrBudget.
+func TestMap_BudgetMinimumNamesTheEffectiveFloor(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, mapSnapshot(2))
+
+	var b bufs
+	if code := Run([]string{"map", "web", "--kind", "deployment", "--budget", "1024", "--data-dir", dir}, b.io()); code != ExitError {
+		t.Fatalf("code = %d, want %d: stdout=%q stderr=%q", code, ExitError, b.out.String(), b.err.String())
+	}
+	if b.out.Len() != 0 {
+		t.Fatalf("stdout must stay empty on error: %q", b.out.String())
+	}
+	e := b.err.String()
+	if !strings.Contains(e, "kscope map: --budget must be at least") || !strings.Contains(e, "1024") {
+		t.Fatalf("stderr must name the effective minimum, not just fail: %q", e)
+	}
+
+	// A budget comfortably above the effective floor must succeed.
+	b = bufs{}
+	if code := Run([]string{"map", "web", "--kind", "deployment", "--budget", "4096", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d, want %d: stderr=%q", code, ExitOK, b.err.String())
+	}
+	if b.out.Len() == 0 {
+		t.Fatalf("expected a rendered map on stdout")
+	}
+}
+
 // longChainSnapshot mirrors graph's longChainFixture (internal/graph/view_test.go):
 // a five-deep chain built from unrealistically long names, so the "skeleton"
 // (ancestors + focus + kubectl) alone exceeds --budget 4096. Namespace is kept
