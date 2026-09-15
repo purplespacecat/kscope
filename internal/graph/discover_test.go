@@ -180,6 +180,16 @@ func TestPodHealth(t *testing.T) {
 		{"pending", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending}}, HealthWarning, ""},
 		{"succeeded", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}, HealthHealthy, ""},
 		{"running all ready", running(corev1.ContainerStatus{Ready: true}), HealthHealthy, ""},
+		// A completed pod whose last container status still carries a waiting
+		// reason is healthy, and a healthy node carries no reason: healthText
+		// prints the reason instead of the health word, so keeping it would
+		// render "✓ ContainerCreating".
+		{
+			"succeeded drops a stale waiting reason",
+			corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{waiting("ContainerCreating")}}},
+			HealthHealthy, "",
+		},
+		{"running all ready drops a waiting reason", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Ready: true, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}}}}}, HealthHealthy, ""},
 		{"running not ready, no reason", running(corev1.ContainerStatus{Ready: false}), HealthWarning, ""},
 		// The reason is the whole point: an agent reading "✗" learns nothing;
 		// "✗ CrashLoopBackOff" tells it which kubectl call to make next.

@@ -690,7 +690,8 @@ func jobHealth(j batchv1.Job) Health {
 // podHealth rolls a pod's phase and container states up to one Health, and
 // returns the first container waiting reason it saw so callers can show *why*
 // rather than only *that* something is wrong. Phase decides the health for
-// non-running pods; the reason is reported whenever a container has one.
+// non-running pods; the reason travels with every unhealthy verdict and with
+// none of the healthy ones.
 func podHealth(p corev1.Pod) (Health, string) {
 	reason := ""
 	for _, cst := range p.Status.ContainerStatuses {
@@ -701,7 +702,11 @@ func podHealth(p corev1.Pod) (Health, string) {
 	}
 	switch p.Status.Phase {
 	case corev1.PodSucceeded:
-		return HealthHealthy, reason
+		// Healthy nodes carry no reason: Node.Reason documents it as empty
+		// for them, and view.go's healthText gives a reason precedence over
+		// the health word, so a leftover "ContainerCreating" on a completed
+		// pod would render as "✓ ContainerCreating".
+		return HealthHealthy, ""
 	case corev1.PodFailed:
 		return HealthError, reason
 	case corev1.PodPending:
@@ -715,7 +720,7 @@ func podHealth(p corev1.Pod) (Health, string) {
 				return HealthWarning, reason
 			}
 		}
-		return HealthHealthy, reason
+		return HealthHealthy, ""
 	default:
 		return HealthUnknown, reason
 	}
