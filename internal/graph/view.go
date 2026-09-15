@@ -2,6 +2,7 @@ package graph
 
 import (
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -207,12 +208,18 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	}
 
 	// Ancestors, root first. Always complete: orientation is not what
-	// --depth trades away. The length guard makes a malformed parent cycle
-	// terminate instead of spinning.
+	// --depth trades away. Walking up appends and reverses once rather than
+	// prepending per step, which copied the whole accumulated chain every
+	// iteration; and a visited set stops a malformed ParentID cycle on the
+	// second sighting of a node instead of after len(snap.Nodes) laps of it.
+	// A ParentID naming a node outside the snapshot simply ends the walk.
 	var chain []Node
-	for cur, ok := v.byID[focus.ParentID]; ok && len(chain) <= len(snap.Nodes); cur, ok = v.byID[cur.ParentID] {
-		chain = append([]Node{cur}, chain...)
+	seen := map[string]bool{focus.ID: true}
+	for cur, ok := v.byID[focus.ParentID]; ok && !seen[cur.ID]; cur, ok = v.byID[cur.ParentID] {
+		seen[cur.ID] = true
+		chain = append(chain, cur)
 	}
+	slices.Reverse(chain)
 	indent := ""
 	for i, a := range chain {
 		connector := ""

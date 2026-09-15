@@ -661,3 +661,60 @@ func benchFixture(total int) Snapshot {
 	}
 	return f.snap()
 }
+
+// A ParentID cycle is malformed input (hand-written JSON, a discovery bug),
+// and the ancestor walk has to survive it: terminate, render, and do it
+// promptly. The old guard let the walk run len(snap.Nodes) laps of the cycle
+// while prepending into a growing slice, which on a large snapshot is
+// quadratic in the node count before it gives up.
+func TestNeighbourhood_ParentCycleTerminates(t *testing.T) {
+	f := &fixture{}
+	f.add(Node{ID: "a", Kind: "Deployment", Name: "a", ParentID: "b"})
+	f.add(Node{ID: "b", Kind: "Deployment", Name: "b", ParentID: "a"})
+	// Bulk so that a per-lap walk would be visibly expensive.
+	for i := 0; i < 5000; i++ {
+		f.add(Node{ID: "pad/" + strconv.Itoa(i), Kind: "ConfigMap", Name: "pad-" + strconv.Itoa(i)})
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r, err := Neighbourhood(f.snap(), "a", ViewOptions{})
+		if err != nil {
+			t.Errorf("parent cycle: unexpected err = %v", err)
+			return
+		}
+		// The ancestor chain is walked one lap: b is a's parent, and a
+		// closes the cycle. (Below the focus the same cycle reappears as
+		// descendants, but that walk is already bounded by --depth.)
+		focusLine := strings.Index(r.Text, "✓ healthy")
+		if focusLine < 0 {
+			t.Errorf("no focus line in:\n%s", r.Text)
+			return
+		}
+		if n := strings.Count(r.Text[:focusLine], "Deployment b"); n != 1 {
+			t.Errorf("the ancestor cycle must be walked once, got %d occurrences:\n%s", n, r.Text)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a two-node ParentID cycle did not terminate promptly")
+	}
+}
+
+// A ParentID naming a node that is not in the snapshot (out of scope, or
+// removed between passes) simply ends the walk.
+func TestNeighbourhood_DanglingParentIsNotAnError(t *testing.T) {
+	f := &fixture{}
+	f.add(Node{ID: "a", Kind: "Deployment", Name: "a", Namespace: "app", ParentID: "core/namespace/gone"})
+	r, err := Neighbourhood(f.snap(), "a", ViewOptions{})
+	if err != nil {
+		t.Fatalf("dangling parent: unexpected err = %v", err)
+	}
+	if !strings.Contains(r.Text, "Deployment a") {
+		t.Fatalf("the focus must still render:\n%s", r.Text)
+	}
+	if strings.Contains(r.Text, "gone") {
+		t.Fatalf("a parent outside the snapshot must not be named:\n%s", r.Text)
+	}
+}
