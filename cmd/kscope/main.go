@@ -4,18 +4,30 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/purplespacecat/kscope/internal/cli"
 	"github.com/purplespacecat/kscope/internal/graph"
 	"github.com/purplespacecat/kscope/internal/paths"
 	"github.com/purplespacecat/kscope/internal/server"
 )
 
 func main() {
+	// Subcommands (map, find, info, manifest) are dispatched before flag
+	// parsing so their own flag sets apply. See docs/agent-cli.md §3.1.
+	if isSubcommand(os.Args) {
+		os.Exit(cli.Run(os.Args[1:], cli.IO{Stdout: os.Stdout, Stderr: os.Stderr}))
+	}
+
 	port := flag.String("port", "8080", "HTTP listen port")
 	dataDir := flag.String("data-dir", paths.DataDir(), "directory for persisted snapshot")
-	discoverNS := flag.String("discover-namespaces", "", "if set, run one discovery pass for these comma-separated namespaces and exit (no HTTP server)")
+	discoverNS := flag.String("discover-namespaces", "", "one-shot mode: run one discovery pass for these comma-separated namespaces and exit (no HTTP server)")
+	discoverAll := flag.Bool("discover-all-namespaces", false, "one-shot mode: run one discovery pass over every namespace and exit")
+	kubeContext := flag.String("context", "", "one-shot mode: kubeconfig context to discover against (default: current-context)")
+	timeout := flag.Duration("timeout", 60*time.Second, "one-shot mode: bound on the discovery pass")
 	includeInfra := flag.Bool("include-infra", true, "one-shot mode: include cluster nodes + control-plane")
 	includeCRDs := flag.Bool("include-crds", true, "one-shot mode: include custom resources (CRDs + instances)")
 	redactExtra := flag.String("redact-extra", "", "extra comma-separated dotted paths to redact in every manifest, e.g. spec.password")
@@ -34,8 +46,12 @@ func main() {
 		log.Printf("warn: could not load existing snapshot: %v", err)
 	}
 
-	if *discoverNS != "" {
-		runCLIDiscover(store, *discoverNS, *includeInfra, *includeCRDs)
+	scope, oneShot, err := oneShotScope(*discoverNS, *discoverAll, *kubeContext, *includeInfra, *includeCRDs)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if oneShot {
+		runCLIDiscover(store, scope, *timeout)
 		return
 	}
 
@@ -47,23 +63,21 @@ func main() {
 }
 
 // runCLIDiscover is the terminal-triggered invocation path. It runs the same
-// discovery code the HTTP handler runs, then exits.
-func runCLIDiscover(store *graph.Store, raw string, includeInfra, includeCRDs bool) {
-	var ns []string
-	for _, part := range strings.Split(raw, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			ns = append(ns, p)
-		}
-	}
-	if len(ns) == 0 {
-		log.Fatal("--discover-namespaces must contain at least one namespace")
-	}
-	snap, err := graph.Discover(context.Background(), graph.Scope{Namespaces: ns, IncludeInfra: includeInfra, IncludeCRDs: includeCRDs})
+// discovery code the HTTP handler runs — bounded the same way, so an agent
+// that invokes it cannot hang on a slow cluster — then exits.
+func runCLIDiscover(store *graph.Store, scope graph.Scope, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	snap, err := graph.Discover(ctx, scope)
 	if err != nil {
 		log.Fatalf("discover: %v", err)
 	}
 	if err := store.Set(snap); err != nil {
 		log.Fatalf("persist snapshot: %v", err)
 	}
-	log.Printf("wrote snapshot: %d nodes, %d edges, namespaces=%v", len(snap.Nodes), len(snap.Edges), ns)
+	ns := "all"
+	if len(scope.Namespaces) > 0 {
+		ns = strings.Join(scope.Namespaces, ",")
+	}
+	log.Printf("wrote snapshot: %d nodes, %d edges, context=%s namespaces=%s", len(snap.Nodes), len(snap.Edges), snap.Cluster.Context, ns)
 }
