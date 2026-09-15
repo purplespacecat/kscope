@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // fixture builds snapshots for projection tests without a cluster or a
@@ -716,5 +717,21 @@ func TestNeighbourhood_DanglingParentIsNotAnError(t *testing.T) {
 	}
 	if strings.Contains(r.Text, "gone") {
 		t.Fatalf("a parent outside the snapshot must not be named:\n%s", r.Text)
+	}
+}
+
+// measure prices every row with connectorBytes, so a row's cost cannot depend
+// on which connector emit gives it — but only while the two are the same
+// width. Widening one and missing the other would make the byte budget
+// quietly false rather than an error, which is the failure ErrSkeleton
+// exists to turn into a loud one.
+func TestConnectorsAreOneWidth(t *testing.T) {
+	if len(connectorBytes) != len(lastConnectorBytes) {
+		t.Fatalf("connectors differ in bytes: %d vs %d", len(connectorBytes), len(lastConnectorBytes))
+	}
+	for _, c := range []string{connectorBytes, lastConnectorBytes} {
+		if n := utf8.RuneCountInString(c); n != connectorRunes {
+			t.Fatalf("connector %q is %d runes, connectorRunes says %d", c, n, connectorRunes)
+		}
 	}
 }

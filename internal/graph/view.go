@@ -224,7 +224,7 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	for i, a := range chain {
 		connector := ""
 		if i > 0 {
-			connector = "└─ "
+			connector = lastConnectorBytes
 		}
 		v.line(indent+connector, nodeLabel(a), healthText(a, false))
 		if i > 0 {
@@ -233,7 +233,7 @@ func Neighbourhood(snap Snapshot, focusID string, opts ViewOptions) (Rendered, e
 	}
 	connector := ""
 	if len(chain) > 0 {
-		connector = "└─ "
+		connector = lastConnectorBytes
 	}
 
 	// The focus line carries the two most probable next actions: the Flux
@@ -372,11 +372,14 @@ func measure(rows []*row, indent int) {
 	}
 }
 
-// Both connectors are one width, so which one a row gets cannot change what
-// it costs. See emit.
+// The two connectors emit uses. Both are one width, so which one a row gets
+// cannot change what it costs — that is what lets measure keep a running
+// total instead of re-rendering. emit reads these same constants so the
+// widths cannot drift apart; connectorsAgree in the tests pins the equality.
 const (
-	connectorBytes = "├─ "
-	connectorRunes = 3
+	connectorBytes     = "├─ "
+	lastConnectorBytes = "└─ "
+	connectorRunes     = 3
 )
 
 // liveBytes is what a row and everything still under it occupy.
@@ -596,9 +599,9 @@ func (v *view) emit(rows []*row, indent string) {
 			v.sb.WriteString(indent + r.label + "\n")
 			continue
 		}
-		connector := "├─ "
+		connector := connectorBytes
 		if i == len(rows)-1 {
-			connector = "└─ "
+			connector = lastConnectorBytes
 		}
 		v.line(indent+connector, r.label, r.right)
 		v.emit(r.kids, indent+indentStep)
