@@ -9,10 +9,12 @@ import (
 	"github.com/purplespacecat/kscope/internal/graph"
 )
 
-// topKinds is how many kinds the summary names before collapsing the rest into
-// a count. Twelve fits one terminal line and covers the workload kinds an agent
-// is usually orienting around.
-const topKinds = 12
+// kindsBudget bounds the "kinds" line in bytes, the way everything else this
+// tool prints is bounded. A count-based cap would not hold: twelve kinds is one
+// line of Pods and Deployments but 333 characters of Crossplane
+// (ManagedResourceDefinition, CompositeResourceDefinition, ...), and the name
+// lengths are the cluster's to choose, not ours.
+const kindsBudget = 200
 
 const infoSynopsis = `kscope info [--data-dir DIR]
 
@@ -81,25 +83,53 @@ func infoText(snap graph.Snapshot, dataDir string) string {
 		}
 		return kinds[i].kind < kinds[j].kind
 	})
-	// Only the busiest kinds are named. A cluster running Crossplane or Kyverno
-	// has hundreds of custom kinds in one snapshot — 137 of them on the
-	// reference cluster, which rendered as a single 2,750-character line. This
-	// command exists to orient an agent cheaply, so the tail becomes a count.
-	shown := kinds
-	if len(shown) > topKinds {
-		shown = shown[:topKinds]
+	// Only the busiest kinds are named, and only as many as the budget affords.
+	// A cluster running Crossplane or Kyverno has hundreds of custom kinds in
+	// one snapshot — 137 of them on the reference cluster, which rendered as a
+	// single 2,750-character line. This command exists to orient an agent
+	// cheaply, so the tail becomes a count.
+	//
+	// Kinds are taken while they fit, leaving room for the "+N more" tail the
+	// remainder will need. The tail is measured against the worst case (every
+	// remaining kind omitted) so adding one more kind can never overflow the
+	// budget by growing the suffix.
+	named, tailNodes := 0, 0
+	for _, k := range kinds {
+		tailNodes += k.n
 	}
-	parts := make([]string, len(shown))
-	for i, k := range shown {
+	used := 0
+	for i, k := range kinds {
+		part := graph.Sanitize(k.kind, graph.ShortText) + " " + strconv.Itoa(k.n)
+		width := len(part)
+		if i > 0 {
+			width += len(", ")
+		}
+		suffix := 0
+		if rest := len(kinds) - i - 1; rest > 0 {
+			suffix = len(fmt.Sprintf(", … +%d more kinds (%d nodes)", rest, tailNodes))
+		}
+		if used+width+suffix > kindsBudget {
+			break
+		}
+		used += width
+		named++
+		tailNodes -= k.n
+	}
+	// Always name at least one kind, however long its name: a line that says
+	// only "+137 more kinds" tells an agent nothing about what is in there.
+	if named == 0 && len(kinds) > 0 {
+		named, tailNodes = 1, 0
+		for _, k := range kinds[1:] {
+			tailNodes += k.n
+		}
+	}
+	parts := make([]string, named)
+	for i, k := range kinds[:named] {
 		parts[i] = graph.Sanitize(k.kind, graph.ShortText) + " " + strconv.Itoa(k.n)
 	}
 	line := strings.Join(parts, ", ")
-	if rest := len(kinds) - len(shown); rest > 0 {
-		tail := 0
-		for _, k := range kinds[len(shown):] {
-			tail += k.n
-		}
-		line += fmt.Sprintf(", … +%d more kinds (%d nodes)", rest, tail)
+	if rest := len(kinds) - named; rest > 0 {
+		line += fmt.Sprintf(", … +%d more kinds (%d nodes)", rest, tailNodes)
 	}
 	fmt.Fprintf(&sb, "kinds     %s\n", line)
 

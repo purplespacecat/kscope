@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -971,48 +972,105 @@ func TestReadCommandsWorkWithoutTheManifestsSidecar(t *testing.T) {
 // in TestInfo_SummarisesErrorsInsteadOfListingThem never caught it, because its
 // fixture has two kinds.
 func TestInfo_CapsTheKindsLine(t *testing.T) {
-	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
-	dir := t.TempDir()
-	snap := infoSnapshot()
-	counts := map[string]int{}
-	for i := 0; i < 137; i++ {
-		// Descending counts so the busiest twelve are predictable.
-		counts[fmt.Sprintf("Kind%03d", i)] = 500 - i
+	// A real cluster running Crossplane and Kyverno put 137 kinds in one
+	// snapshot, which the old code rendered as a single 2,750-character line —
+	// the opposite of what a cheap orientation command should cost an agent. The
+	// line-count budget in TestInfo_SummarisesErrorsInsteadOfListingThem never
+	// caught it, because its fixture has two kinds.
+	//
+	// The cap is a byte budget, not a count, so the cases below use the kind
+	// names that actually broke a count-based cap: twelve Crossplane kinds are
+	// one line of Pods and Deployments but 333 characters of these.
+	long := []string{
+		"ManagedResourceDefinition", "CompositeResourceDefinition", "CompositionRevision",
+		"ProviderConfigUsage", "ClusterPolicyReport", "DeploymentRuntimeConfig",
+		"ClusterAdmissionReport", "RolePolicyAttachment", "CiliumIdentity",
+		"VPCEndpointSubnetAssociation", "ManagedResourceActivationPolicy", "ProviderRevision",
 	}
-	snap.Stats.Counts = counts
-	writeSnapshot(t, dir, snap)
+	cases := []struct {
+		name  string
+		kinds func() map[string]int
+	}{
+		{"many short kinds", func() map[string]int {
+			m := map[string]int{}
+			for i := 0; i < 137; i++ {
+				m[fmt.Sprintf("Kind%03d", i)] = 500 - i
+			}
+			return m
+		}},
+		{"realistically long kind names", func() map[string]int {
+			m := map[string]int{}
+			for i, k := range long {
+				m[k] = 500 - i
+			}
+			for i := 0; i < 90; i++ {
+				m[fmt.Sprintf("Extra%03d", i)] = 100 - i
+			}
+			return m
+		}},
+		{"one kind whose name alone exceeds the budget", func() map[string]int {
+			return map[string]int{strings.Repeat("A", kindsBudget+50): 7, "Pod": 3}
+		}},
+	}
 
-	var b bufs
-	if code := Run([]string{"info", "--data-dir", dir}, b.io()); code != ExitOK {
-		t.Fatalf("code = %d: %s", code, b.err.String())
-	}
-	var kindsLine string
-	for _, l := range strings.Split(b.out.String(), "\n") {
-		if strings.HasPrefix(l, "kinds ") {
-			kindsLine = l
-		}
-		if len(l) > 200 {
-			t.Fatalf("no line may exceed 200 chars; got %d:\n%s", len(l), l)
-		}
-	}
-	if kindsLine == "" {
-		t.Fatalf("no kinds line:\n%s", b.out.String())
-	}
-	// The busiest kind is named, the 13th is not, and the tail is accounted for
-	// by both its kind count and its node count.
-	if !strings.Contains(kindsLine, "Kind000 500") {
-		t.Errorf("busiest kind missing: %q", kindsLine)
-	}
-	if strings.Contains(kindsLine, "Kind012") {
-		t.Errorf("only %d kinds may be named: %q", topKinds, kindsLine)
-	}
-	rest := 137 - topKinds
-	tail := 0
-	for i := topKinds; i < 137; i++ {
-		tail += 500 - i
-	}
-	want := fmt.Sprintf("… +%d more kinds (%d nodes)", rest, tail)
-	if !strings.Contains(kindsLine, want) {
-		t.Errorf("missing %q in %q", want, kindsLine)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+			dir := t.TempDir()
+			snap := infoSnapshot()
+			counts := tc.kinds()
+			snap.Stats.Counts = counts
+			writeSnapshot(t, dir, snap)
+
+			var b bufs
+			if code := Run([]string{"info", "--data-dir", dir}, b.io()); code != ExitOK {
+				t.Fatalf("code = %d: %s", code, b.err.String())
+			}
+			var kindsLine string
+			for _, l := range strings.Split(b.out.String(), "\n") {
+				if strings.HasPrefix(l, "kinds ") {
+					kindsLine = l
+				}
+			}
+			if kindsLine == "" {
+				t.Fatalf("no kinds line:\n%s", b.out.String())
+			}
+			// "kinds     " is the label; the budget governs the list itself.
+			list := strings.TrimPrefix(kindsLine, "kinds     ")
+			if len(list) > kindsBudget && !strings.HasPrefix(list, strings.Repeat("A", 10)) {
+				t.Fatalf("list is %d bytes, budget is %d:\n%s", len(list), kindsBudget, list)
+			}
+			// At least one kind is always named, and every node is accounted
+			// for — either named or counted in the tail.
+			// Kind names are rendered through graph.Sanitize, which caps them at
+			// ShortText — so match the rendered form, not the raw key.
+			rendered := func(k string) string { return graph.Sanitize(k, graph.ShortText) }
+			named := 0
+			for k := range counts {
+				if strings.Contains(list, rendered(k)+" ") {
+					named++
+				}
+			}
+			if named == 0 {
+				t.Fatalf("no kind named: %q", list)
+			}
+			total := 0
+			for _, n := range counts {
+				total += n
+			}
+			accounted := 0
+			for k, n := range counts {
+				if strings.Contains(list, rendered(k)+" "+strconv.Itoa(n)) {
+					accounted += n
+				}
+			}
+			if m := regexp.MustCompile(`\+(\d+) more kinds \((\d+) nodes\)`).FindStringSubmatch(list); m != nil {
+				tail, _ := strconv.Atoi(m[2])
+				accounted += tail
+			}
+			if accounted != total {
+				t.Fatalf("accounted for %d of %d nodes:\n%s", accounted, total, list)
+			}
+		})
 	}
 }
