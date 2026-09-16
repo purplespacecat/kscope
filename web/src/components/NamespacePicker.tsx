@@ -23,7 +23,7 @@ const onCluster = (available: string[], selected: Set<string>) =>
 
 // Modal namespace picker. Mounting it *is* opening it — ScopePanel renders it
 // conditionally — so the draft is seeded from props on mount and there is no
-// open/close prop. See docs/namespace-picker.md.
+// open/close prop.
 export function NamespacePicker({ available, selected, onDone, onCancel }: Props) {
   const [draft, setDraft] = useState(() => onCluster(available, selected));
   const [edited, setEdited] = useState(false);

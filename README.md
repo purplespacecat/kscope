@@ -219,9 +219,13 @@ so the default is per-user rather than `./data`.
 
 Go core (`client-go` discovery, edge inference, snapshot store) + React/xyflow
 frontend, wrapped in a [Wails v2](https://wails.io) webview for the desktop —
-one codebase, ~14 MB packages, no bundled browser runtime. Design details and
-decisions: [`docs/architecture.md`](docs/architecture.md); the full v1 product
-spec: [`docs/spec-v1.md`](docs/spec-v1.md).
+one codebase, ~14 MB packages, no bundled browser runtime.
+
+The graph model is the part worth knowing: containment is a single unambiguous
+tree (`Node.ParentID`, derived from ownerReferences), and everything
+cross-cutting — `mounts`, `selects`, `managed-by`, `exposes` — is an edge, so
+the hierarchy never becomes a matter of opinion. Health is rolled up at
+discovery time, and Secret values are redacted before anything reaches disk.
 
 ## Development
 
