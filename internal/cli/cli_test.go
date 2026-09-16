@@ -964,3 +964,55 @@ func TestReadCommandsWorkWithoutTheManifestsSidecar(t *testing.T) {
 		t.Fatalf("stderr = %q", b.err.String())
 	}
 }
+
+// A real cluster running Crossplane and Kyverno put 137 kinds in one snapshot,
+// which the old code rendered as a single 2,750-character line — the opposite of
+// what a cheap orientation command should cost an agent. The line-count budget
+// in TestInfo_SummarisesErrorsInsteadOfListingThem never caught it, because its
+// fixture has two kinds.
+func TestInfo_CapsTheKindsLine(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	snap := infoSnapshot()
+	counts := map[string]int{}
+	for i := 0; i < 137; i++ {
+		// Descending counts so the busiest twelve are predictable.
+		counts[fmt.Sprintf("Kind%03d", i)] = 500 - i
+	}
+	snap.Stats.Counts = counts
+	writeSnapshot(t, dir, snap)
+
+	var b bufs
+	if code := Run([]string{"info", "--data-dir", dir}, b.io()); code != ExitOK {
+		t.Fatalf("code = %d: %s", code, b.err.String())
+	}
+	var kindsLine string
+	for _, l := range strings.Split(b.out.String(), "\n") {
+		if strings.HasPrefix(l, "kinds ") {
+			kindsLine = l
+		}
+		if len(l) > 200 {
+			t.Fatalf("no line may exceed 200 chars; got %d:\n%s", len(l), l)
+		}
+	}
+	if kindsLine == "" {
+		t.Fatalf("no kinds line:\n%s", b.out.String())
+	}
+	// The busiest kind is named, the 13th is not, and the tail is accounted for
+	// by both its kind count and its node count.
+	if !strings.Contains(kindsLine, "Kind000 500") {
+		t.Errorf("busiest kind missing: %q", kindsLine)
+	}
+	if strings.Contains(kindsLine, "Kind012") {
+		t.Errorf("only %d kinds may be named: %q", topKinds, kindsLine)
+	}
+	rest := 137 - topKinds
+	tail := 0
+	for i := topKinds; i < 137; i++ {
+		tail += 500 - i
+	}
+	want := fmt.Sprintf("… +%d more kinds (%d nodes)", rest, tail)
+	if !strings.Contains(kindsLine, want) {
+		t.Errorf("missing %q in %q", want, kindsLine)
+	}
+}

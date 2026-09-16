@@ -194,6 +194,12 @@ in-process behind the webview.
 | `--timeout` | `60s` | server | one-shot mode: bound on the discovery pass |
 | `--include-infra` / `--include-crds` | `true` | server | one-shot mode: infra layer / custom resources |
 
+> **`--include-crds` is not namespace-scoped.** Namespaced custom resources honour
+> `--discover-namespaces`, but cluster-scoped ones belong to no namespace and are always
+> included. On a cluster running Crossplane or Kyverno that dominates the snapshot — one
+> namespace of `deploy/infra` discovers 11,242 nodes in ~90s and writes 12 MB, nearly all
+> of it cluster-scoped CRs. Pass `--include-crds=false` when you only want the namespace.
+
 ¹ `~/.local/share/kscope` on Linux, `~/Library/Application Support/kscope` on
 macOS. A desktop app launched from a menu has an arbitrary working directory,
 so the default is per-user rather than `./data`.

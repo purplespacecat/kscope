@@ -50,7 +50,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	kubeContext := fs.String("context", "", "one-shot mode: kubeconfig context to discover against (default: current-context)")
 	timeout := fs.Duration("timeout", 60*time.Second, "one-shot mode: bound on the discovery pass")
 	includeInfra := fs.Bool("include-infra", true, "one-shot mode: include cluster nodes + control-plane")
-	includeCRDs := fs.Bool("include-crds", true, "one-shot mode: include custom resources (CRDs + instances)")
+	includeCRDs := fs.Bool("include-crds", true, "one-shot mode: include custom resources. Namespaced CRs honour --discover-namespaces, but cluster-scoped ones belong to no namespace and are always included — on a Crossplane- or Kyverno-heavy cluster that is most of the snapshot")
 	redactExtra := fs.String("redact-extra", "", "extra comma-separated dotted paths to redact in every manifest, e.g. spec.password")
 
 	if err := fs.Parse(args[1:]); err != nil {

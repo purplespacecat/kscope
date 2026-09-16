@@ -9,6 +9,11 @@ import (
 	"github.com/purplespacecat/kscope/internal/graph"
 )
 
+// topKinds is how many kinds the summary names before collapsing the rest into
+// a count. Twelve fits one terminal line and covers the workload kinds an agent
+// is usually orienting around.
+const topKinds = 12
+
 const infoSynopsis = `kscope info [--data-dir DIR]
 
 Describe the loaded snapshot: cluster, scope, age, counts, discovery errors.`
@@ -76,11 +81,27 @@ func infoText(snap graph.Snapshot, dataDir string) string {
 		}
 		return kinds[i].kind < kinds[j].kind
 	})
-	parts := make([]string, len(kinds))
-	for i, k := range kinds {
+	// Only the busiest kinds are named. A cluster running Crossplane or Kyverno
+	// has hundreds of custom kinds in one snapshot — 137 of them on the
+	// reference cluster, which rendered as a single 2,750-character line. This
+	// command exists to orient an agent cheaply, so the tail becomes a count.
+	shown := kinds
+	if len(shown) > topKinds {
+		shown = shown[:topKinds]
+	}
+	parts := make([]string, len(shown))
+	for i, k := range shown {
 		parts[i] = graph.Sanitize(k.kind, graph.ShortText) + " " + strconv.Itoa(k.n)
 	}
-	fmt.Fprintf(&sb, "kinds     %s\n", strings.Join(parts, ", "))
+	line := strings.Join(parts, ", ")
+	if rest := len(kinds) - len(shown); rest > 0 {
+		tail := 0
+		for _, k := range kinds[len(shown):] {
+			tail += k.n
+		}
+		line += fmt.Sprintf(", … +%d more kinds (%d nodes)", rest, tail)
+	}
+	fmt.Fprintf(&sb, "kinds     %s\n", line)
 
 	if n := len(snap.Stats.Errors); n > 0 {
 		top := topErrors(snap.Stats.Errors, 5)
