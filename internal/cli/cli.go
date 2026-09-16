@@ -1,6 +1,6 @@
 // Package cli implements the agent-facing subcommands of the kscope binary:
 // map, find, info and manifest. Each is a function over an io pair that
-// returns an exit code, so the contract of docs/agent-cli.md §5 — what goes
+// returns an exit code, so the contract — what goes
 // to stdout, what goes to stderr, which code means what — is tested without
 // spawning a process. main.go only forwards os.Args.
 package cli

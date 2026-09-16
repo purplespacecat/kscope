@@ -21,12 +21,13 @@ import (
 func main() { os.Exit(run(os.Args, os.Stdout, os.Stderr)) }
 
 // run is main's body over explicit streams and an explicit exit code, so the
-// stream and code contract of docs/agent-cli.md §5 is tested without spawning
+// stream and exit-code contract is tested without spawning
 // a process — the same shape internal/cli already has. args is the whole
 // argv, program name included.
 func run(args []string, stdout, stderr io.Writer) int {
 	// Subcommands (map, find, info, manifest) are dispatched before flag
-	// parsing so their own flag sets apply. See docs/agent-cli.md §3.1.
+	// parsing so their own flag sets apply. A leading word — known command or
+	// not — goes to cli.Run; only a flag or nothing reaches the server path.
 	if isSubcommand(args) {
 		return cli.Run(args[1:], cli.IO{Stdout: stdout, Stderr: stderr})
 	}

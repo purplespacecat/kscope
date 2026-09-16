@@ -12,7 +12,7 @@ import (
 // The projection is the agent-facing view of a snapshot: one resource's
 // neighbourhood as indented text, bounded by depth and by bytes. It is a
 // pure function — no files, no flags, no clock — so it is table-tested here
-// and rendered by whichever front end wants it. See docs/agent-cli.md §4.
+// and rendered by whichever front end wants it.
 
 const (
 	DefaultDepth  = 2

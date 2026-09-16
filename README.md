@@ -152,7 +152,7 @@ can be megabytes, so bound it yourself if that matters. Exit codes are part of
 the contract: `0` printed, `2`
 out of scope or ambiguous (stderr names the fix), `3` no snapshot yet, `1`
 error. `kscope --help` lists the subcommands on stdout and `kscope <cmd>
---help` describes one's flags. See `docs/agent-cli.md`.
+--help` describes one's flags.
 
 Paste this into the `CLAUDE.md` of any repo where the agent should reach for it:
 
