@@ -444,6 +444,7 @@ func (b *builder) pods(ctx context.Context, cs kubernetes.Interface, ns string) 
 	}
 	for _, p := range list.Items {
 		id := nodeID("", "Pod", ns, p.Name)
+		h, reason := podHealth(p)
 		b.push(Node{
 			ID:         id,
 			Kind:       "Pod",
@@ -452,7 +453,8 @@ func (b *builder) pods(ctx context.Context, cs kubernetes.Interface, ns string) 
 			APIVersion: "v1",
 			UID:        string(p.UID),
 			Labels:     p.Labels,
-			Health:     podHealth(p),
+			Health:     h,
+			Reason:     reason,
 			Kubectl:    kubectlCmd(b.kubectx, ns, "get pod "+p.Name+" -o yaml"),
 		}, p.UID, controllerUID(p.OwnerReferences))
 		b.captureManifest(id, &p, "v1", "Pod")
@@ -685,28 +687,42 @@ func jobHealth(j batchv1.Job) Health {
 	return HealthUnknown
 }
 
-// podHealth folds phase + container states into one signal. CrashLoopBackOff
-// is an error even though the pod phase stays "Running".
-func podHealth(p corev1.Pod) Health {
+// podHealth rolls a pod's phase and container states up to one Health, and
+// returns the first container waiting reason it saw so callers can show *why*
+// rather than only *that* something is wrong. Phase decides the health for
+// non-running pods; the reason travels with every unhealthy verdict and with
+// none of the healthy ones.
+func podHealth(p corev1.Pod) (Health, string) {
+	reason := ""
+	for _, cst := range p.Status.ContainerStatuses {
+		if w := cst.State.Waiting; w != nil && w.Reason != "" {
+			reason = w.Reason
+			break
+		}
+	}
 	switch p.Status.Phase {
 	case corev1.PodSucceeded:
-		return HealthHealthy
+		// Healthy nodes carry no reason: Node.Reason documents it as empty
+		// for them, and view.go's healthText gives a reason precedence over
+		// the health word, so a leftover "ContainerCreating" on a completed
+		// pod would render as "✓ ContainerCreating".
+		return HealthHealthy, ""
 	case corev1.PodFailed:
-		return HealthError
+		return HealthError, reason
 	case corev1.PodPending:
-		return HealthWarning
+		return HealthWarning, reason
 	case corev1.PodRunning:
 		for _, cst := range p.Status.ContainerStatuses {
 			if w := cst.State.Waiting; w != nil && w.Reason == "CrashLoopBackOff" {
-				return HealthError
+				return HealthError, reason
 			}
 			if !cst.Ready {
-				return HealthWarning
+				return HealthWarning, reason
 			}
 		}
-		return HealthHealthy
+		return HealthHealthy, ""
 	default:
-		return HealthUnknown
+		return HealthUnknown, reason
 	}
 }
 

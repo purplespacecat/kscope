@@ -45,7 +45,7 @@ func (b *builder) controlPlane(ctx context.Context, cs kubernetes.Interface, dis
 			if comp == "" {
 				continue
 			}
-			h := podHealth(p)
+			h, _ := podHealth(p)
 			if prev, ok := compHealth[comp]; ok {
 				h = worseHealth(prev, h) // HA planes: worst replica wins
 			}

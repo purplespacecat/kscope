@@ -164,29 +164,53 @@ func TestPodHealth(t *testing.T) {
 	running := func(statuses ...corev1.ContainerStatus) corev1.Pod {
 		return corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: statuses}}
 	}
+	waiting := func(reason string) corev1.ContainerStatus {
+		return corev1.ContainerStatus{
+			Ready: false,
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reason}},
+		}
+	}
 	cases := []struct {
-		name string
-		pod  corev1.Pod
-		want Health
+		name       string
+		pod        corev1.Pod
+		want       Health
+		wantReason string
 	}{
-		{"failed", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodFailed}}, HealthError},
-		{"pending", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending}}, HealthWarning},
-		{"succeeded", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}, HealthHealthy},
-		{"running all ready", running(corev1.ContainerStatus{Ready: true}), HealthHealthy},
-		{"running not ready", running(corev1.ContainerStatus{Ready: false}), HealthWarning},
+		{"failed", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodFailed}}, HealthError, ""},
+		{"pending", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending}}, HealthWarning, ""},
+		{"succeeded", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}, HealthHealthy, ""},
+		{"running all ready", running(corev1.ContainerStatus{Ready: true}), HealthHealthy, ""},
+		// A completed pod whose last container status still carries a waiting
+		// reason is healthy, and a healthy node carries no reason: healthText
+		// prints the reason instead of the health word, so keeping it would
+		// render "✓ ContainerCreating".
 		{
-			"crashloop trumps running",
-			running(corev1.ContainerStatus{
-				Ready: false,
-				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
-			}),
-			HealthError,
+			"succeeded drops a stale waiting reason",
+			corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded, ContainerStatuses: []corev1.ContainerStatus{waiting("ContainerCreating")}}},
+			HealthHealthy, "",
+		},
+		{"running all ready drops a waiting reason", corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{Ready: true, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}}}}}, HealthHealthy, ""},
+		{"running not ready, no reason", running(corev1.ContainerStatus{Ready: false}), HealthWarning, ""},
+		// The reason is the whole point: an agent reading "✗" learns nothing;
+		// "✗ CrashLoopBackOff" tells it which kubectl call to make next.
+		{"crashloop trumps running", running(waiting("CrashLoopBackOff")), HealthError, "CrashLoopBackOff"},
+		{"image pull is a warning with its reason", running(waiting("ImagePullBackOff")), HealthWarning, "ImagePullBackOff"},
+		// A pending pod with a scheduling reason on a container is still
+		// pending — phase wins, but the reason travels.
+		{
+			"pending keeps container reason",
+			corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{waiting("ContainerCreating")}}},
+			HealthWarning, "ContainerCreating",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := podHealth(tc.pod); got != tc.want {
+			got, reason := podHealth(tc.pod)
+			if got != tc.want {
 				t.Fatalf("podHealth = %s, want %s", got, tc.want)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
 			}
 		})
 	}

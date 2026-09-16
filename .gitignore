@@ -27,3 +27,4 @@ kubeconfig
 # Packaged artifacts (scripts/package.sh). Note build/appicon.png above it is
 # deliberately tracked — Wails and the .rpm/.deb both source the icon there.
 /dist/
+.superpowers/

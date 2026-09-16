@@ -129,10 +129,42 @@ go build -o bin/kscope ./cmd/kscope && ./bin/kscope --port 8080
 
 # One-shot CLI: run a discovery, write the snapshot, exit (cron-friendly)
 go run ./cmd/kscope --discover-namespaces=default,monitoring
+
+# Agent-facing subcommands: read the snapshot, print compact text, exit
+kscope info                                   # what is loaded, how stale, from where
+kscope find --name-contains exporter          # locate a resource
+kscope map gitlab-ci-exporter --kind deployment   # its neighbourhood, ≤ 8 KB
+kscope manifest gitlab-ci-exporter --kind deployment
 ```
 
 Both binaries share one snapshot store, so a cron'd CLI discovery shows up in
 whichever UI you open next.
+
+### Using kscope from an AI agent
+
+`kscope map` prints one resource's place in the containment tree, what it is
+wired to, and health with reasons — a few hundred bytes instead of the raw
+snapshot or a pile of `kubectl get -o yaml`. Its output never exceeds
+`--budget` bytes (default 8192); `kscope find` and `kscope info` are short by
+construction. `kscope manifest` is the exception and is **not** bounded — it
+prints the stored YAML whole, which for a ConfigMap holding an embedded file
+can be megabytes, so bound it yourself if that matters. Exit codes are part of
+the contract: `0` printed, `2`
+out of scope or ambiguous (stderr names the fix), `3` no snapshot yet, `1`
+error. `kscope --help` lists the subcommands on stdout and `kscope <cmd>
+--help` describes one's flags.
+
+Paste this into the `CLAUDE.md` of any repo where the agent should reach for it:
+
+    ## Cluster map
+    `kscope map <name> [--namespace ns] [--kind k]` prints a compact map of a
+    resource: its place in the containment tree, what it is wired to, and health
+    with reasons. Prefer it over `kubectl get -o yaml` when the question is "what
+    is this connected to" or "what is unhealthy near this". Flags may come before
+    or after the name. Exit 2 means out of scope or ambiguous — read stderr, it
+    names the fix. `kscope find --name-contains <frag>` locates a resource first;
+    `kscope info` shows what scope is loaded, how stale it is, and which data dir
+    it read.
 
 ### API
 
@@ -157,7 +189,16 @@ in-process behind the webview.
 | `--focus-context/-namespace/-kind/-name` | `""` | desktop | resource to focus on launch (what the k9s plugin passes) |
 | `--port` | `8080` | server | HTTP listen port |
 | `--discover-namespaces` | `""` | server | one-shot mode: run discovery for these namespaces and exit |
+| `--discover-all-namespaces` | `false` | server | one-shot mode: every namespace (exclusive with `--discover-namespaces`) |
+| `--context` | `""` | server | one-shot mode: kubeconfig context to discover against |
+| `--timeout` | `60s` | server | one-shot mode: bound on the discovery pass |
 | `--include-infra` / `--include-crds` | `true` | server | one-shot mode: infra layer / custom resources |
+
+> **`--include-crds` is not namespace-scoped.** Namespaced custom resources honour
+> `--discover-namespaces`, but cluster-scoped ones belong to no namespace and are always
+> included. On a cluster running Crossplane or Kyverno that dominates the snapshot — one
+> namespace of `deploy/infra` discovers 11,242 nodes in ~90s and writes 12 MB, nearly all
+> of it cluster-scoped CRs. Pass `--include-crds=false` when you only want the namespace.
 
 ¹ `~/.local/share/kscope` on Linux, `~/Library/Application Support/kscope` on
 macOS. A desktop app launched from a menu has an arbitrary working directory,
@@ -178,9 +219,13 @@ so the default is per-user rather than `./data`.
 
 Go core (`client-go` discovery, edge inference, snapshot store) + React/xyflow
 frontend, wrapped in a [Wails v2](https://wails.io) webview for the desktop —
-one codebase, ~14 MB packages, no bundled browser runtime. Design details and
-decisions: [`docs/architecture.md`](docs/architecture.md); the full v1 product
-spec: [`docs/spec-v1.md`](docs/spec-v1.md).
+one codebase, ~14 MB packages, no bundled browser runtime.
+
+The graph model is the part worth knowing: containment is a single unambiguous
+tree (`Node.ParentID`, derived from ownerReferences), and everything
+cross-cutting — `mounts`, `selects`, `managed-by`, `exposes` — is an edge, so
+the hierarchy never becomes a matter of opinion. Health is rolled up at
+discovery time, and Secret values are redacted before anything reaches disk.
 
 ## Development
 

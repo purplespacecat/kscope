@@ -12,19 +12,40 @@ import type { Snapshot } from "../types/graph";
 // anchor tests keep the synchronous stub because their comments (and one
 // assertion strategy) are written against the measurement-never-lands world;
 // this file needs edges, so it gets the working timing instead.
+//
+// It also delivers that callback MORE THAN ONCE. xyflow's handler bails out
+// when the store does not yet know the node, and a dropped delivery is gone for
+// good: nothing measures, no edges render, and a waitFor for a caption then
+// burns its whole budget waiting for something that will never arrive. One
+// `setTimeout(…, 0)` wins that race on a fast machine and loses it on a loaded
+// CI runner — the same commit passed at 08:30 and failed twice at 10:25 and
+// 10:32 with "Unable to find an element with the text: managed-by". Re-delivery
+// is also the faithful behaviour: a real ResizeObserver keeps reporting until
+// it is disconnected, rather than announcing a box once and giving up. The
+// attempts are bounded so a test can never hang on this stub.
 class ResizeObserverStub {
   private cb: ResizeObserverCallback;
+  private timers: ReturnType<typeof setTimeout>[] = [];
   constructor(cb: ResizeObserverCallback) {
     this.cb = cb;
   }
   observe(target: Element) {
-    setTimeout(
-      () => this.cb([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver),
-      0,
-    );
+    for (const delay of [0, 1, 5, 20, 50]) {
+      this.timers.push(
+        setTimeout(
+          () => this.cb([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver),
+          delay,
+        ),
+      );
+    }
   }
-  unobserve() {}
-  disconnect() {}
+  unobserve() {
+    this.disconnect();
+  }
+  disconnect() {
+    for (const t of this.timers) clearTimeout(t);
+    this.timers = [];
+  }
 }
 globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 

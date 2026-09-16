@@ -1,5 +1,6 @@
 // Geometry for keeping a clicked node anchored across a layout change.
-// See docs/focus-anchoring.md.
+// Clicking a node that expands must not move it: record its pre-reflow
+// absolute position and pan the viewport by the delta. Zoom is never touched.
 
 export interface Point {
   x: number;

@@ -36,7 +36,7 @@ const (
 // Containment (cluster → namespace → workload → pod) is expressed through
 // ParentID — every node has exactly one place in the tree. Edges are reserved
 // for cross-cutting relationships (mounts, selects, managed-by, ...) so the
-// hierarchy stays unambiguous. See docs/spec-v1.md §3.
+// hierarchy stays unambiguous.
 type Node struct {
 	ID         string            `json:"id"` // "<group>/<kind>[/<ns>]/<name>", kind lowercased
 	Kind       string            `json:"kind"`
@@ -47,6 +47,12 @@ type Node struct {
 	ParentID   string            `json:"parentId,omitempty"` // "" only for the cluster root
 	Labels     map[string]string `json:"labels,omitempty"`
 	Health     Health            `json:"health"`
+	// Reason is the short status word behind a non-healthy Health, when the
+	// source object has one — a container waiting reason such as
+	// CrashLoopBackOff or ImagePullBackOff. Empty for healthy nodes and for
+	// kinds whose health has no single reason. Old snapshots lack it and
+	// decode unchanged.
+	Reason string `json:"reason,omitempty"`
 	// Synthetic marks logical nodes with no direct API object behind them
 	// (the cluster root, and control-plane components on k3s where the whole
 	// plane is one process). Rendered dashed in the UI.
