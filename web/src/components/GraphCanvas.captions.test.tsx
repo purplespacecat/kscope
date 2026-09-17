@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { Snapshot } from "../types/graph";
@@ -119,6 +119,22 @@ const translateOf = (el: Element) => {
 const nodeEl = (id: string) =>
   document.querySelector(`.react-flow__node[data-id="${id}"]`);
 
+/**
+ * Open the namespace so its workloads are on screen. Expansion is the user's
+ * now: a fresh view shows the cluster's namespaces and waits to be asked for
+ * anything deeper, so a test that wants edges has to ask.
+ */
+async function renderExpanded() {
+  renderApp();
+  const toggle = await waitFor(() => {
+    const el = nodeEl(NS)?.querySelector("[data-toggle]");
+    if (!el) throw new Error("namespace not on screen yet");
+    return el;
+  });
+  fireEvent.click(toggle);
+  await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+}
+
 function renderApp() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -144,7 +160,7 @@ describe("edge captions", () => {
   };
 
   it("pins each caption to its own source card, above the edge lines", async () => {
-    renderApp();
+    await renderExpanded();
     const chips = await waitFor(() => {
       const found = screen.getAllByText("managed-by");
       expect(found).toHaveLength(2); // fan-in: one per source, none at midpoints
@@ -170,7 +186,7 @@ describe("edge captions", () => {
   });
 
   it("captions a kind once per source and stacks different kinds below it", async () => {
-    renderApp();
+    await renderExpanded();
     await waitFor(() => expect(screen.getAllByText("managed-by")).toHaveLength(2));
 
     // Two "uses" edges leave DEP; the caption appears once.
