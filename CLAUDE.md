@@ -28,7 +28,9 @@
   spec in the vault (`specs/2026-09-16-kscope-agent-cli-spec.md`). A leading flag still means
   "run the server"; a leading word always goes to `cli.Run`, so an unknown command exits 1
   rather than starting a listener. Exit codes are contract: `0` printed, `1` error,
-  `2` recoverable (out of scope **or** ambiguous), `3` no snapshot. Projection on stdout,
+  `2` recoverable (out of scope **or** ambiguous), `3` no snapshot. `find` exits 2 only
+  when an *identity* filter (`--name-contains`/`--kind`/`--namespace`) matches nothing;
+  a `--health` filter matching nothing is a result, not a miss, and exits 0. Projection on stdout,
   everything else on stderr; `--help` is the one exception and goes to stdout.
 - `internal/graph/view.go` is a **pure** projection (snapshot + focus → text): no I/O, no
   clock, no flags. Its byte budget is a hard cap — if you change what `emit` writes, change
