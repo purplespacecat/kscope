@@ -11,7 +11,11 @@ import (
 const findSynopsis = `kscope find [--name-contains S] [--kind K] [--namespace NS] [--health H] [--limit N] [--data-dir DIR]
 
 List resources in the snapshot. --kind accepts a Kind (Deployment) or its
-plural (deployments). With no filters, an inventory up to --limit.`
+plural (deployments). With no filters, an inventory up to --limit.
+
+Exit 2 means a name, kind or namespace the snapshot does not have. A --health
+filter matching nothing is an answer, not a miss: it exits 0 with a zero count,
+so 'find --health error' finding none means nothing in scope is unhealthy.`
 
 func init() {
 	register(command{name: "find", summary: "list resources in the snapshot, filtered by name, kind, namespace or health", synopsis: findSynopsis, run: runFind})
@@ -55,7 +59,11 @@ func runFind(args []string, io IO) int {
 		return code
 	}
 
+	// identityHits counts nodes passing the name/kind/namespace filters alone,
+	// before --health narrows them. The two kinds of "nothing" mean different
+	// things and only one of them is a miss — see below.
 	var matches []graph.Node
+	identityHits := 0
 	for _, n := range snap.Nodes {
 		if *contains != "" && !strings.Contains(strings.ToLower(n.Name), strings.ToLower(*contains)) {
 			continue
@@ -66,6 +74,7 @@ func runFind(args []string, io IO) int {
 		if *ns != "" && n.Namespace != *ns {
 			continue
 		}
+		identityHits++
 		if wantHealth != "" && n.Health != wantHealth {
 			continue
 		}
@@ -82,8 +91,15 @@ func runFind(args []string, io IO) int {
 		return a.Name < b.Name
 	})
 
-	filtered := *contains != "" || *kind != "" || *ns != "" || wantHealth != ""
-	if len(matches) == 0 && filtered {
+	// Exit 2 means "widen and retry", so it belongs only to a query that named
+	// something the snapshot does not have. --name-contains, --kind and
+	// --namespace name things; --health asks a question about whatever is in
+	// scope, and "none" is a real answer to it. Treating those alike made
+	// `find --health error` report that nothing is broken by printing an
+	// out-of-scope refresh hint and failing — an agent reasonably read that as
+	// an inconclusive lookup rather than a clean bill of health.
+	namedSomething := *contains != "" || *kind != "" || *ns != ""
+	if namedSomething && identityHits == 0 {
 		what := describe(*contains, *kind, *ns, *health)
 		fmt.Fprint(io.Stderr, missMessage(what, snap, c.dataDir, *ns))
 		return ExitMiss

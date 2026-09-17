@@ -346,6 +346,67 @@ func TestFind_MissIsExit2WithTheFix(t *testing.T) {
 	}
 }
 
+// A filter that matches nothing is not the same as a lookup that missed.
+// "--health error found none" means nothing in scope is broken — a result an
+// agent should be able to act on — but it used to print the out-of-scope
+// refresh hint and exit 2, which reads as "your query failed, widen it". The
+// rule: re-run the identity filters (name/kind/namespace) alone. If those
+// match nothing, you named something the snapshot does not have, and the
+// refresh hint is the right answer. If they match but a health filter
+// narrowed the result to zero, the snapshot answered the question.
+func TestFind_EmptyHealthResultIsAnAnswerNotAMiss(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, findSnapshot())
+
+	// No node in the fixture is in warning.
+	for _, args := range [][]string{
+		{"find", "--health", "warning"},
+		{"find", "--namespace", "app", "--health", "warning"},
+		{"find", "--kind", "pods", "--health", "warning"},
+	} {
+		var b bufs
+		if code := Run(append(args, "--data-dir", dir), b.io()); code != ExitOK {
+			t.Fatalf("%v: code = %d, want %d (stderr %q)", args, code, ExitOK, b.err.String())
+		}
+		out := b.out.String()
+		if !strings.Contains(out, "0 matches (of 6 nodes)") {
+			t.Errorf("%v: want a zero-match count line on stdout:\n%s", args, out)
+		}
+		if !strings.Contains(out, "snapshot 4h12m old") {
+			t.Errorf("%v: zero matches still needs the staleness footer:\n%s", args, out)
+		}
+		if b.err.Len() != 0 {
+			t.Errorf("%v: an answered query must leave stderr empty: %q", args, b.err.String())
+		}
+	}
+}
+
+// The converse: an identity filter that matches nothing is still a miss, with
+// the refresh hint, however the health filter is set.
+func TestFind_UnmatchedIdentityFilterStaysAMiss(t *testing.T) {
+	pinClock(t, time.Date(2026, 9, 14, 10, 12, 0, 0, time.UTC))
+	dir := t.TempDir()
+	writeSnapshot(t, dir, findSnapshot())
+
+	for _, args := range [][]string{
+		{"find", "--kind", "statefulsets", "--health", "warning"},
+		{"find", "--name-contains", "cube", "--health", "healthy"},
+		{"find", "--namespace", "other", "--health", "healthy"},
+	} {
+		var b bufs
+		if code := Run(append(args, "--data-dir", dir), b.io()); code != ExitMiss {
+			t.Fatalf("%v: code = %d, want %d", args, code, ExitMiss)
+		}
+		if b.out.Len() != 0 {
+			t.Errorf("%v: miss must leave stdout empty: %q", args, b.out.String())
+		}
+		if !strings.Contains(b.err.String(), "No resource matching") {
+			t.Errorf("%v: miss must keep the refresh hint:\n%s", args, b.err.String())
+		}
+	}
+}
+
 func TestFind_BadHealthIsExit1(t *testing.T) {
 	dir := t.TempDir()
 	writeSnapshot(t, dir, findSnapshot())

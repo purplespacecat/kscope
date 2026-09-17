@@ -151,8 +151,10 @@ prints the stored YAML whole, which for a ConfigMap holding an embedded file
 can be megabytes, so bound it yourself if that matters. Exit codes are part of
 the contract: `0` printed, `2`
 out of scope or ambiguous (stderr names the fix), `3` no snapshot yet, `1`
-error. `kscope --help` lists the subcommands on stdout and `kscope <cmd>
---help` describes one's flags.
+error. A `kscope find --health` query that matches nothing exits `0` with a
+zero count, not `2` — "nothing in scope is unhealthy" is an answer, and only a
+name, kind or namespace the snapshot lacks is a miss. `kscope --help` lists the
+subcommands on stdout and `kscope <cmd> --help` describes one's flags.
 
 Paste this into the `CLAUDE.md` of any repo where the agent should reach for it:
 
@@ -164,7 +166,9 @@ Paste this into the `CLAUDE.md` of any repo where the agent should reach for it:
     or after the name. Exit 2 means out of scope or ambiguous — read stderr, it
     names the fix. `kscope find --name-contains <frag>` locates a resource first;
     `kscope info` shows what scope is loaded, how stale it is, and which data dir
-    it read.
+    it read. kscope captures a fixed set of built-in kinds — RBAC (Roles,
+    RoleBindings), HPAs, PDBs and webhooks are never in a snapshot, so use
+    kubectl for those.
 
 ### API
 
