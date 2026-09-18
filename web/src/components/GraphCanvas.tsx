@@ -165,17 +165,20 @@ function layout(
         borderRadius: 8,
         // Selection is blue; a card related to it is ringed in the colour its
         // relationship carries in the legend, which is the whole indicator now.
+        // It has to carry across a wide canvas without being hunted for, so the
+        // ring is thick, haloed and backed by a wash of the same colour — a
+        // 1px tint beside a 1px grey reads as noise rather than as an answer.
         border: isSelected
           ? "2px solid #3b82f6"
           : ring
-            ? `2px solid ${ring}`
+            ? `3px solid ${ring}`
             : `1px ${n.synthetic ? "dashed" : "solid"} #cbd5e1`,
         boxShadow: isSelected
           ? "0 0 0 3px rgba(59,130,246,0.25)"
           : ring
-            ? `0 0 0 3px ${ring}33`
+            ? `0 0 0 5px ${ring}33, 0 2px 8px ${ring}40`
             : `inset 3px 0 0 ${hex}`,
-        background: "#fff",
+        background: ring ? `${ring}0f` : "#fff",
         fontSize: 12,
       },
     });
@@ -219,9 +222,9 @@ function layout(
         width: NODE_W,
         padding: 8,
         borderRadius: 8,
-        border: ring ? `2px solid ${ring}` : "1px dashed #94a3b8",
-        boxShadow: ring ? `0 0 0 3px ${ring}33` : undefined,
-        background: "#f8fafc",
+        border: ring ? `3px solid ${ring}` : "1px dashed #94a3b8",
+        boxShadow: ring ? `0 0 0 5px ${ring}33, 0 2px 8px ${ring}40` : undefined,
+        background: ring ? `${ring}0f` : "#f8fafc",
         fontSize: 12,
       },
     });

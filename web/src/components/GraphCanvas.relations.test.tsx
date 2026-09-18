@@ -79,6 +79,7 @@ const rgb = (hex: string) => {
   const n = parseInt(hex.slice(1), 16);
   return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 };
+const HEX = { references: "#3b82f6" };
 const COLOR = {
   references: rgb("#3b82f6"),
   uses: rgb("#64748b"),
@@ -166,6 +167,24 @@ describe("relationship outlines", () => {
     await waitFor(() => expect(borderOf(CM)).toContain(COLOR.references));
     expect(borderOf(SA)).toContain(COLOR.uses);
     expect(borderOf(SVC)).toContain(COLOR.selects);
+  });
+
+  it("makes a related card obviously different from an unrelated one", async () => {
+    // "Coloured" is not enough on its own — a 1px tint beside a 1px grey reads
+    // as noise at a glance. The ring has to be thicker AND carry a halo.
+    await renderFocused(DEP);
+    await waitFor(() => expect(borderOf(CM)).toContain(COLOR.references));
+
+    const width = (id: string) =>
+      parseFloat(nodeEl(id)!.style.border.match(/^([\d.]+)px/)?.[1] ?? "0");
+    expect(width(CM)).toBeGreaterThanOrEqual(3);
+    expect(width(CM)).toBeGreaterThan(width(KUST));
+    // A halo around the ring, in the same colour, so it carries across the
+    // canvas rather than needing to be looked for. Alpha-suffixed hex is not
+    // normalised to rgb() the way a plain border colour is.
+    expect(nodeEl(CM)!.style.boxShadow).toContain(HEX.references);
+    // And the card itself is tinted, so the whole shape reads as related.
+    expect(nodeEl(CM)!.style.background).not.toBe("rgb(255, 255, 255)");
   });
 
   it("leaves unrelated cards alone", async () => {
