@@ -398,16 +398,27 @@ export function GraphCanvas({
   revealTick,
   onSelect,
 }: Props) {
-// The spotlight fades on its own: it answers "which one did I just click",
+  // The spotlight fades on its own: it answers "which one did I just click",
   // which stops being a question a second or two later. Keyed on the tick so
   // clicking the same resource twice flags it twice.
-  const [flashId, setFlashId] = useState<string | null>(null);
+  //
+  // Picked up during render rather than in an effect — setting state
+  // synchronously in an effect cascades renders, and the tick already says
+  // whether this is a new request. The effect only schedules the fade, where
+  // the setState sits in a callback rather than the effect body.
+  const [flash, setFlash] = useState<{ tick: number; id: string | null }>({
+    tick: spotlight.tick,
+    id: null,
+  });
+  if (flash.tick !== spotlight.tick) {
+    setFlash({ tick: spotlight.tick, id: spotlight.id });
+  }
+  const flashId = flash.id;
   useEffect(() => {
-    if (!spotlight.id) return;
-    setFlashId(spotlight.id);
-    const t = setTimeout(() => setFlashId(null), 1800);
+    if (!flash.id) return;
+    const t = setTimeout(() => setFlash((f) => ({ ...f, id: null })), 1800);
     return () => clearTimeout(t);
-  }, [spotlight.id, spotlight.tick]);
+  }, [flash.id, flash.tick]);
 
   const { flowNodes, flowEdges } = useMemo(
     () => layout(visible, outlines, childCounts, marks, expanded, selectedId, flashId),
