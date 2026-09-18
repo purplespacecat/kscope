@@ -278,23 +278,58 @@ export const EDGE_STYLE: Record<string, { stroke: string }> = {
   "instance-of": { stroke: "#65a30d" }, // lime — CR → its definition
 };
 
-const INCOMING_LABEL: Record<string, string> = {
-  mounts: "mounted by",
-  references: "referenced by",
-  uses: "used by",
-  selects: "selected by",
-  exposes: "exposed by",
-  binds: "bound by",
-  "scheduled-on": "hosts",
-  "depends-on": "depended on by",
-  "managed-by": "manages",
-  "sourced-from": "sources",
-  "instance-of": "instantiated by",
+/**
+ * What an edge means, in words a reader can act on rather than the API's own
+ * vocabulary. "selects" is a label-selector match — true, and useless unless you
+ * already knew that; a Service *routes to* a Pod and a NetworkPolicy *applies
+ * to* one, which is the same edge saying two different things depending on
+ * which end you are standing at.
+ *
+ * Keyed [outgoing, incoming] — read from the source's side, then the target's.
+ */
+const PHRASE: Record<string, [string, string]> = {
+  mounts: ["mounts", "mounted by"],
+  references: ["reads", "read by"],
+  uses: ["runs as", "used by"],
+  selects: ["selects", "selected by"],
+  exposes: ["exposes", "exposed by"],
+  binds: ["bound to", "binds"],
+  "scheduled-on": ["runs on", "hosts"],
+  "depends-on": ["depends on", "depended on by"],
+  "managed-by": ["managed by", "manages"],
+  "sourced-from": ["sourced from", "source of"],
+  "instance-of": ["an instance of", "instantiated by"],
 };
+
+/** Overrides where the source's Kind changes what the edge actually means. */
+const PHRASE_BY_SOURCE: Record<string, Record<string, [string, string]>> = {
+  selects: {
+    Service: ["routes to", "routed to by"],
+    NetworkPolicy: ["applies to", "governed by"],
+  },
+};
+
+/**
+ * Plain-English name for an edge, from one end's point of view.
+ * `direction` is "out" when reading from the source, "in" from the target.
+ */
+export function edgePhrase(
+  kind: string,
+  direction: "out" | "in",
+  sourceKind?: string,
+): string {
+  const i = direction === "out" ? 0 : 1;
+  const bySource = sourceKind
+    ? PHRASE_BY_SOURCE[kind]?.[sourceKind]
+    : undefined;
+  const pair = bySource ?? PHRASE[kind];
+  if (pair) return pair[i];
+  return direction === "out" ? kind : `${kind} \u2190`;
+}
 
 /** Label for an edge read from the target's side. */
 export function incomingEdgeLabel(kind: string): string {
-  return INCOMING_LABEL[kind] ?? `${kind} ←`;
+  return edgePhrase(kind, "in");
 }
 
 /**

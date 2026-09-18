@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import dagre from "@dagrejs/dagre";
 import type { GraphNode } from "../types/graph";
-import { groupId, resolveEdges, visibleTree } from "./tree";
+import { groupId, relate, visibleTree } from "./tree";
 
 // Spec §7: expanding a large group lays out hundreds of nodes through dagre
 // synchronously, and the breaking point was unmeasured. This pins it. The
@@ -52,7 +52,7 @@ describe("large-group performance", () => {
     const edges = all
       .filter((n) => n.kind === "Pod")
       .map((n) => ({ id: `e${n.id}`, source: n.id, target: "ns", kind: "uses" }));
-    resolveEdges(all, edges, v, "p/0");
+    relate(all, edges, v, "p/0");
     const ms = performance.now() - t0;
     expect(v.nodes).toHaveLength(pods + 3);
     expect(ms).toBeLessThan(100);

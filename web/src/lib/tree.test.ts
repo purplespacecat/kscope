@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { GraphEdge, GraphNode } from "../types/graph";
+import type { GraphNode } from "../types/graph";
 import {
   controllerMarks,
+  outlineColors,
   prune,
-  resolveEdges,
+  relate,
   reveal,
   showParent,
   toggleExpand,
@@ -274,77 +275,7 @@ describe("prune", () => {
   });
 });
 
-describe("resolveEdges", () => {
-  // Arrows answer "what is this card wired to", so they hang off the selection.
-  const SEL = "p/web-1-a";
-  const e = (id: string, source: string, target: string, kind = "mounts"): GraphEdge => ({
-    id,
-    source,
-    target,
-    kind,
-  });
-  const pair = (r: { source: string; target: string }) => `${r.source}->${r.target}`;
-
-  it("re-points a hidden endpoint to the group card standing in for it", () => {
-    const st = state({ expanded: new Set(["cluster", "ns/app", "d/web", "rs/web-1"]) });
-    const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "cm/a")], v, SEL);
-    expect(r.map(pair)).toEqual(["p/web-1-a->__kg__ns/app__ConfigMap"]);
-  });
-
-  it("re-points a hidden endpoint to its nearest visible ancestor", () => {
-    // The Pod is not on screen; the Deployment is the nearest thing that is.
-    const st = state({ expanded: new Set(["cluster", "ns/app"]) });
-    const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "svc/web")], v, SEL);
-    expect(r.map(pair)).toEqual(["d/web->svc/web"]);
-  });
-
-  it("merges edges that collapse onto the same pair, carrying a count", () => {
-    const st = state({ expanded: new Set(["cluster", "ns/app", "d/web", "rs/web-1"]) });
-    const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "cm/a"), e("e2", "p/web-1-a", "cm/b")], v, SEL);
-    expect(r).toHaveLength(1);
-    expect(r[0].count).toBe(2);
-  });
-
-  it("snaps to the real member once the group is expanded", () => {
-    const st = state({
-      expanded: new Set(["cluster", "ns/app", "d/web", "rs/web-1"]),
-      expandedGroups: new Set(["__kg__ns/app__ConfigMap"]),
-    });
-    const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "cm/a")], v, SEL);
-    expect(r.map(pair)).toEqual(["p/web-1-a->cm/a"]);
-  });
-
-  it("drops an edge whose endpoints resolve to the same card", () => {
-    const st = state({ expanded: new Set(["cluster", "ns/app"]) });
-    const v = visibleTree(NODES, st);
-    // Both the ReplicaSet and the Pod stand in as the Deployment.
-    expect(resolveEdges(NODES, [e("e1", "rs/web-1", "p/web-1-a")], v, SEL)).toHaveLength(0);
-  });
-
-  it("drops an edge to something outside the visible root's subtree", () => {
-    const st = state({ rootId: "ns/app", expanded: new Set(["ns/app"]) });
-    const v = visibleTree(NODES, st);
-    // Selected, so it is not filtered by scope — it is dropped because the
-    // other end has no visible stand-in at all.
-    expect(
-      resolveEdges(NODES, [e("e1", "svc/web", "ns/other")], v, "svc/web"),
-    ).toHaveLength(0);
-  });
-
-  it("keeps a single edge uncounted", () => {
-    const st = state({ expanded: new Set(["cluster", "ns/app"]) });
-    const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "d/web", "svc/web")], v, "d/web");
-    expect(r[0].count).toBe(1);
-    expect(r[0].kind).toBe("mounts");
-  });
-});
-
-describe("resolveEdges scoping", () => {
+describe("relate", () => {
   const e = (id: string, source: string, target: string, kind = "mounts") => ({
     id,
     source,
@@ -352,38 +283,79 @@ describe("resolveEdges scoping", () => {
     kind,
   });
   const open = state({ expanded: new Set(["cluster", "ns/app", "d/web", "rs/web-1"]) });
+  const shallow = state({ expanded: new Set(["cluster", "ns/app"]) });
 
-  it("draws nothing when nothing is selected", () => {
+  it("finds nothing when nothing is selected", () => {
     const v = visibleTree(NODES, open);
-    expect(resolveEdges(NODES, [e("e1", "p/web-1-a", "svc/web")], v, null)).toHaveLength(0);
+    expect(relate(NODES, [e("e1", "p/web-1-a", "svc/web")], v, null)).toHaveLength(0);
   });
 
-  it("draws only the edges touching the selected card", () => {
+  it("reports only relationships touching the selection", () => {
     const v = visibleTree(NODES, open);
-    const r = resolveEdges(
+    const r = relate(
       NODES,
-      [
-        e("e1", "p/web-1-a", "svc/web"),
-        e("e2", "d/web", "svc/web"), // nothing to do with the selection
-      ],
+      [e("e1", "p/web-1-a", "svc/web"), e("e2", "d/web", "svc/web")],
       v,
       "p/web-1-a",
     );
-    expect(r.map((x) => x.id)).toHaveLength(1);
-    expect(r[0].source).toBe("p/web-1-a");
-  });
-
-  it("follows the selection in either direction", () => {
-    const v = visibleTree(NODES, open);
-    const r = resolveEdges(NODES, [e("e1", "svc/web", "p/web-1-a", "selects")], v, "p/web-1-a");
     expect(r).toHaveLength(1);
+    expect(r[0].cardIds).toEqual(["svc/web"]);
   });
 
-  // The card already carries a mark for its controller and its own Kind, so
-  // repeating either as an arrow is clutter that says nothing new.
-  it("never draws managed-by or instance-of", () => {
+  it("words the relationship from the selection's point of view", () => {
+    const v = visibleTree(NODES, shallow);
+    const out = relate(NODES, [e("e1", "svc/web", "d/web", "selects")], v, "svc/web");
+    expect(out[0].phrase).toBe("routes to");
+    const into = relate(NODES, [e("e1", "svc/web", "d/web", "selects")], v, "d/web");
+    expect(into[0].phrase).toBe("routed to by");
+  });
+
+  it("outlines the group card standing in for a hidden member", () => {
     const v = visibleTree(NODES, open);
-    const r = resolveEdges(
+    const r = relate(NODES, [e("e1", "p/web-1-a", "cm/a")], v, "p/web-1-a");
+    expect(r[0].cardIds).toEqual(["__kg__ns/app__ConfigMap"]);
+  });
+
+  it("gathers one entry per kind, counting the edges behind it", () => {
+    const v = visibleTree(NODES, open);
+    const r = relate(
+      NODES,
+      [e("e1", "p/web-1-a", "cm/a"), e("e2", "p/web-1-a", "cm/b")],
+      v,
+      "p/web-1-a",
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0].count).toBe(2);
+    expect(r[0].cardIds).toEqual(["__kg__ns/app__ConfigMap"]); // one card, deduped
+  });
+
+  it("separates the two directions of one kind", () => {
+    const v = visibleTree(NODES, shallow);
+    const r = relate(
+      NODES,
+      [e("e1", "d/web", "svc/web"), e("e2", "svc/web", "d/web")],
+      v,
+      "d/web",
+    );
+    expect(r.map((x) => x.phrase).sort()).toEqual(["mounted by", "mounts"]);
+  });
+
+  it("never reports the selection's own card as related to itself", () => {
+    const v = visibleTree(NODES, shallow);
+    // Both ends collapse onto the Deployment, which is the selection.
+    const r = relate(NODES, [e("e1", "rs/web-1", "p/web-1-a")], v, "d/web");
+    expect(r).toHaveLength(0);
+  });
+
+  it("drops a relationship whose other end is nowhere on screen", () => {
+    const st = state({ rootId: "ns/app", expanded: new Set(["ns/app"]) });
+    const v = visibleTree(NODES, st);
+    expect(relate(NODES, [e("e1", "svc/web", "ns/other")], v, "svc/web")).toHaveLength(0);
+  });
+
+  it("never reports managed-by or instance-of, which the card already marks", () => {
+    const v = visibleTree(NODES, open);
+    const r = relate(
       NODES,
       [
         e("e1", "p/web-1-a", "svc/web", "managed-by"),
@@ -394,6 +366,44 @@ describe("resolveEdges scoping", () => {
       "p/web-1-a",
     );
     expect(r.map((x) => x.kind)).toEqual(["mounts"]);
+  });
+
+  it("gives each kind a colour so the outline means something", () => {
+    const v = visibleTree(NODES, shallow);
+    const r = relate(NODES, [e("e1", "d/web", "svc/web", "selects")], v, "d/web");
+    expect(r[0].color).toMatch(/^#[0-9a-f]{6}$/i);
+  });
+});
+
+describe("outlineColors", () => {
+  it("maps every related card to its relationship's colour", () => {
+    const v = visibleTree(NODES, state({ expanded: new Set(["cluster", "ns/app"]) }));
+    const r = relate(
+      NODES,
+      [{ id: "e1", source: "d/web", target: "svc/web", kind: "selects" }],
+      v,
+      "d/web",
+    );
+    expect(outlineColors(r).get("svc/web")).toBe(r[0].color);
+  });
+
+  it("keeps one ring on a card that takes part in two relationships", () => {
+    const v = visibleTree(NODES, state({ expanded: new Set(["cluster", "ns/app"]) }));
+    // The Service is both mounted by the Deployment and selects it back.
+    const r = relate(
+      NODES,
+      [
+        { id: "e1", source: "d/web", target: "svc/web", kind: "mounts" },
+        { id: "e2", source: "svc/web", target: "d/web", kind: "selects" },
+      ],
+      v,
+      "d/web",
+    );
+    expect(r).toHaveLength(2);
+    // Two rings on one card reads as a rendering fault, so the first wins and
+    // the legend carries the rest.
+    expect(outlineColors(r).get("svc/web")).toBe(r[0].color);
+    expect(r[0].color).not.toBe(r[1].color);
   });
 });
 

@@ -1,5 +1,5 @@
 import type { GraphEdge, GraphNode } from "../types/graph";
-import { INFRA_KINDS } from "./display";
+import { EDGE_STYLE, edgePhrase, INFRA_KINDS } from "./display";
 
 /** A parent's leaf children of one kind fold once there are at least this many. */
 const GROUP_AT = 3;
@@ -294,29 +294,6 @@ export function prune(
   };
 }
 
-/** A relationship edge after both endpoints have been resolved to visible cards. */
-export interface ResolvedEdge {
-  id: string;
-  source: string;
-  target: string;
-  kind: string;
-  /** How many underlying edges collapsed onto this pair. */
-  count: number;
-}
-
-/**
- * Draw relationships against what is actually on screen.
- *
- * Each endpoint resolves to the nearest card standing in for it: itself if
- * visible, else the group card holding it, else the nearest visible ancestor.
- * The graph therefore never claims a connection that isn't there, and never
- * hides one that is — expanding a group re-runs this from the same state and the
- * edge lands on the real member with no special case.
- *
- * Dropped: endpoints with no visible stand-in (outside the root's subtree), and
- * pairs that resolve to the same card, which would render as a self-loop saying
- * nothing.
- */
 /**
  * Edge kinds that are a property of the node rather than wiring between nodes.
  * "Managed by Flux" and "an instance of this CRD" are already on the card — as
@@ -340,26 +317,21 @@ export function controllerMarks(
   return marks;
 }
 
-export function resolveEdges(
-  all: GraphNode[],
-  edges: GraphEdge[],
+/**
+ * Resolve any node id to the visible card standing in for it: itself if on
+ * screen, else the group card holding it, else the nearest visible ancestor.
+ */
+function standInResolver(
+  byId: Map<string, GraphNode>,
   visible: Visible,
-  selectedId: string | null,
-): ResolvedEdge[] {
-  // Arrows answer one question — "what is THIS wired to" — so they belong to
-  // the selection. Drawing every relationship among every visible card was
-  // what made a namespace look like a plate of spaghetti: dozens of lines, none
-  // of them the answer to anything the reader had asked.
-  if (!selectedId) return [];
-  const byId = new Map(all.map((x) => [x.id, x]));
+): (id: string) => string | undefined {
   const onScreen = new Set(visible.nodes.map((x) => x.id));
-  const holder = new Map<string, string>(); // member id → the group card hiding it
+  const holder = new Map<string, string>();
   for (const g of visible.groups) {
     if (g.expanded) continue;
     for (const m of g.memberIds) holder.set(m, g.id);
   }
-
-  const standIn = (id: string): string | undefined => {
+  return (id: string) => {
     if (onScreen.has(id)) return id;
     const g = holder.get(id);
     if (g) return g;
@@ -370,20 +342,93 @@ export function resolveEdges(
     }
     return undefined;
   };
+}
 
-  // Node ids are slash-delimited paths and never contain "->", so this is a
-  // safe composite key.
-  const merged = new Map<string, ResolvedEdge>();
+/**
+ * One kind of relationship the selected card takes part in, ready to render as
+ * a legend line and an outline colour.
+ */
+export interface Relation {
+  /** Model edge kind, e.g. "selects". */
+  kind: string;
+  /** Plain English, from the selection's point of view. */
+  phrase: string;
+  /** Outline colour for the cards on the other end. */
+  color: string;
+  /** Visible cards to outline — group cards where a member is folded away. */
+  cardIds: string[];
+  /** How many underlying edges this line stands for. */
+  count: number;
+}
+
+/**
+ * What the selected card is related to.
+ *
+ * Arrows across a canvas turned out to be a poor way to say "these two things
+ * are connected": they cross, they converge, and the reader still has to trace
+ * a line to find the other end. This returns the same information as a set of
+ * cards to outline plus a legend naming each colour, so the eye jumps straight
+ * to the related cards wherever they sit in the tree.
+ *
+ * Hidden endpoints resolve to whatever card stands in for them, so a folded
+ * group outlines as a whole rather than silently dropping the relationship.
+ */
+export function relate(
+  all: GraphNode[],
+  edges: GraphEdge[],
+  visible: Visible,
+  selectedId: string | null,
+): Relation[] {
+  if (!selectedId) return [];
+  const byId = new Map(all.map((x) => [x.id, x]));
+  const standIn = standInResolver(byId, visible);
+
+  // Keyed by kind+direction: "mounts" out and "mounted by" in are two different
+  // statements about the selection and deserve their own legend lines.
+  const out = new Map<string, Relation>();
   for (const e of edges) {
     if (MARK_KINDS.has(e.kind)) continue;
-    if (e.source !== selectedId && e.target !== selectedId) continue;
-    const source = standIn(e.source);
-    const target = standIn(e.target);
-    if (!source || !target || source === target) continue;
-    const key = `${source}->${target}->${e.kind}`;
-    const seen = merged.get(key);
-    if (seen) seen.count++;
-    else merged.set(key, { id: key, source, target, kind: e.kind, count: 1 });
+    const outgoing = e.source === selectedId;
+    const incoming = e.target === selectedId;
+    if (!outgoing && !incoming) continue;
+
+    const otherId = outgoing ? e.target : e.source;
+    const card = standIn(otherId);
+    // No stand-in means the other end is outside the visible root's subtree
+    // entirely; nothing to outline, so there is nothing to say.
+    if (!card || card === selectedId) continue;
+
+    const key = `${e.kind}|${outgoing ? "out" : "in"}`;
+    let rel = out.get(key);
+    if (!rel) {
+      rel = {
+        kind: e.kind,
+        phrase: edgePhrase(
+          e.kind,
+          outgoing ? "out" : "in",
+          byId.get(e.source)?.kind,
+        ),
+        color: EDGE_STYLE[e.kind]?.stroke ?? "#64748b",
+        cardIds: [],
+        count: 0,
+      };
+      out.set(key, rel);
+    }
+    rel.count++;
+    if (!rel.cardIds.includes(card)) rel.cardIds.push(card);
   }
-  return [...merged.values()];
+  return [...out.values()];
+}
+
+/**
+ * Card id → outline colour. A card taking part in two relationships keeps the
+ * first one's colour: two rings on one card reads as a rendering fault rather
+ * than as extra information, and the legend still lists both.
+ */
+export function outlineColors(relations: Relation[]): Map<string, string> {
+  const colors = new Map<string, string>();
+  for (const r of relations) {
+    for (const id of r.cardIds) if (!colors.has(id)) colors.set(id, r.color);
+  }
+  return colors;
 }

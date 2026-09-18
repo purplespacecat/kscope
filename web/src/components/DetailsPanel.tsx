@@ -7,7 +7,7 @@ import {
   HEALTH_LABEL,
   gitopsManagerId,
   health,
-  incomingEdgeLabel,
+  edgePhrase,
   kindAbbrev,
   kindChipClass,
   kindDocsUrl,
@@ -60,11 +60,16 @@ export function DetailsPanel({
     for (const e of edges) {
       if (e.source === node.id) {
         const other = byId.get(e.target);
-        if (other) rows.push({ key: e.id, label: e.kind, other });
+        if (other)
+          rows.push({ key: e.id, label: edgePhrase(e.kind, "out", node.kind), other });
       } else if (e.target === node.id) {
         const other = byId.get(e.source);
         if (other)
-          rows.push({ key: e.id, label: incomingEdgeLabel(e.kind), other });
+          rows.push({
+            key: e.id,
+            label: edgePhrase(e.kind, "in", byId.get(e.source)?.kind),
+            other,
+          });
       }
     }
     return rows;

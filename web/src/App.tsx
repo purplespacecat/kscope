@@ -13,8 +13,9 @@ import {
 import type { GraphEdge, GraphNode } from "./types/graph";
 import {
   controllerMarks,
+  outlineColors,
   prune,
-  resolveEdges,
+  relate,
   reveal,
   showParent,
   toggleExpand,
@@ -95,10 +96,11 @@ export default function App() {
   }, [nodes]);
 
   const visible = useMemo(() => visibleTree(nodes, tree), [nodes, tree]);
-  const relationships = useMemo(
-    () => resolveEdges(nodes, allEdges, visible, selectedId),
+  const relations = useMemo(
+    () => relate(nodes, allEdges, visible, selectedId),
     [nodes, allEdges, visible, selectedId],
   );
+  const outlines = useMemo(() => outlineColors(relations), [relations]);
   const marks = useMemo(() => controllerMarks(nodes, allEdges), [nodes, allEdges]);
   const childCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -272,7 +274,8 @@ export default function App() {
           {snapshot && (
             <GraphCanvas
               visible={visible}
-              relationships={relationships}
+              relations={relations}
+              outlines={outlines}
               expanded={tree.expanded}
               childCounts={childCounts}
               marks={marks}

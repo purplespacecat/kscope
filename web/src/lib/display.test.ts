@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   gitopsManagerId,
   health,
+  edgePhrase,
   incomingEdgeLabel,
   kindDocsUrl,
   worseOf,
@@ -75,5 +76,32 @@ describe("kindDocsUrl", () => {
     expect(kindDocsUrl("Component", "api-server")?.url).toContain("kube-apiserver");
     expect(kindDocsUrl("Component", "datastore (kine)")?.url).toContain("k3s.io");
     expect(kindDocsUrl("Component", "mystery")).toBeNull();
+  });
+});
+
+describe("edgePhrase", () => {
+  it("says what a Service actually does to a Pod", () => {
+    expect(edgePhrase("selects", "out", "Service")).toBe("routes to");
+    expect(edgePhrase("selects", "in", "Service")).toBe("routed to by");
+  });
+
+  // Same edge kind, different source, genuinely different sentence: a policy
+  // governs a Pod, it does not route anything to it.
+  it("says something different when the source is a NetworkPolicy", () => {
+    expect(edgePhrase("selects", "out", "NetworkPolicy")).toBe("applies to");
+    expect(edgePhrase("selects", "in", "NetworkPolicy")).toBe("governed by");
+  });
+
+  it("reads as a sentence for the kinds that do not vary", () => {
+    expect(edgePhrase("references", "out")).toBe("reads");
+    expect(edgePhrase("references", "in")).toBe("read by");
+    expect(edgePhrase("uses", "out")).toBe("runs as");
+    expect(edgePhrase("scheduled-on", "out")).toBe("runs on");
+    expect(edgePhrase("binds", "out")).toBe("bound to");
+  });
+
+  it("falls back to the raw kind for an edge it has no words for", () => {
+    expect(edgePhrase("frobnicates", "out")).toBe("frobnicates");
+    expect(edgePhrase("frobnicates", "in")).toBe("frobnicates ←");
   });
 });

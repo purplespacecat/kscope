@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
-  BaseEdge,
   Controls,
-  EdgeLabelRenderer,
   MiniMap,
   Panel,
   ReactFlow,
-  getSmoothStepPath,
   useOnViewportChange,
   useReactFlow,
   type Edge as FlowEdge,
-  type EdgeProps,
   type Node as FlowNode,
   type Viewport,
 } from "@xyflow/react";
@@ -19,7 +15,6 @@ import dagre from "@dagrejs/dagre";
 import { DESKTOP_EVENTS, onDesktopEvent } from "../lib/desktop";
 import type { GraphNode } from "../types/graph";
 import {
-  EDGE_STYLE,
   HEALTH_DOT,
   HEALTH_HEX,
   HEALTH_LABEL,
@@ -30,13 +25,15 @@ import {
   kindPlural,
 } from "../lib/display";
 import { absolutePositions, anchoredViewport, type Point } from "../lib/viewport";
-import type { ResolvedEdge, Visible } from "../lib/tree";
+import type { Relation, Visible } from "../lib/tree";
 
 interface Props {
   /** Exactly what is on screen, from lib/tree.ts. */
   visible: Visible;
-  /** Relationship edges already resolved to visible cards. */
-  relationships: ResolvedEdge[];
+  /** What the selected card is related to, for the legend. */
+  relations: Relation[];
+  /** Card id → outline colour for a related card. */
+  outlines: Map<string, string>;
   /** Nodes whose children are shown — drives the ▸/▾ glyph. */
   expanded: Set<string>;
   /** id → number of containment children, for the toggle badge. */
@@ -83,7 +80,7 @@ interface Layout {
 // the picture.
 function layout(
   visible: Visible,
-  relationships: ResolvedEdge[],
+  outlines: Map<string, string>,
   childCounts: Map<string, number>,
   marks: Map<string, string>,
   expanded: Set<string>,
@@ -116,6 +113,7 @@ function layout(
     if (!p) continue;
     const hex = HEALTH_HEX[health(n)];
     const isSelected = n.id === selectedId;
+    const ring = outlines.get(n.id);
     const kids = childCounts.get(n.id) ?? 0;
     const isOpen = expanded.has(n.id);
     flowNodes.push({
@@ -165,12 +163,18 @@ function layout(
         width: NODE_W,
         padding: 8,
         borderRadius: 8,
+        // Selection is blue; a card related to it is ringed in the colour its
+        // relationship carries in the legend, which is the whole indicator now.
         border: isSelected
           ? "2px solid #3b82f6"
-          : `1px ${n.synthetic ? "dashed" : "solid"} #cbd5e1`,
+          : ring
+            ? `2px solid ${ring}`
+            : `1px ${n.synthetic ? "dashed" : "solid"} #cbd5e1`,
         boxShadow: isSelected
           ? "0 0 0 3px rgba(59,130,246,0.25)"
-          : `inset 3px 0 0 ${hex}`,
+          : ring
+            ? `0 0 0 3px ${ring}33`
+            : `inset 3px 0 0 ${hex}`,
         background: "#fff",
         fontSize: 12,
       },
@@ -180,6 +184,7 @@ function layout(
   for (const gr of visible.groups) {
     const p = at(gr.id);
     if (!p) continue;
+    const ring = outlines.get(gr.id);
     flowNodes.push({
       id: gr.id,
       position: p,
@@ -214,7 +219,8 @@ function layout(
         width: NODE_W,
         padding: 8,
         borderRadius: 8,
-        border: "1px dashed #94a3b8",
+        border: ring ? `2px solid ${ring}` : "1px dashed #94a3b8",
+        boxShadow: ring ? `0 0 0 3px ${ring}33` : undefined,
         background: "#f8fafc",
         fontSize: 12,
       },
@@ -233,114 +239,8 @@ function layout(
     });
   }
 
-  // One caption per (source, kind), pinned under the source card (see
-  // RelationshipEdge). A fan-out — one Service selecting five Pods — reads as a
-  // single "selects" under the Service, not five copies scattered along the
-  // lines; a fan-in — five resources managed by one Kustomization — captions
-  // each source card individually.
-  const captioned = new Set<string>();
-  const captionSlots = new Map<string, number>();
-  for (const e of relationships) {
-    const rel = EDGE_STYLE[e.kind];
-    let caption: Pick<FlowEdge, "label" | "data"> | undefined;
-    if (!captioned.has(`${e.source}|${e.kind}`)) {
-      captioned.add(`${e.source}|${e.kind}`);
-      const slot = captionSlots.get(e.source) ?? 0;
-      captionSlots.set(e.source, slot + 1);
-      // A merged edge says how many underlying links it stands for, so a
-      // collapsed group never understates the wiring behind it.
-      caption = {
-        label: e.count > 1 ? `${e.kind} ×${e.count}` : e.kind,
-        data: { labelSlot: slot },
-      };
-    }
-    flowEdges.push({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      ...caption,
-      type: "rel",
-      // Minimal by design: one thin line per relationship, no dash pattern.
-      // These only exist for the selected card now, so they can be quiet and
-      // still be found.
-      style: rel
-        ? { stroke: rel.stroke, strokeWidth: 1.5 }
-        : { stroke: "#94a3b8", strokeWidth: 1.5 },
-    });
-  }
-
   return { flowNodes, flowEdges };
 }
-
-// Relationship edge with a pinned caption. The default edge label sits at the
-// path midpoint as bare SVG text in the same paint layer as every edge path —
-// which failed two ways in a converging graph: lines drawn later struck the
-// text through, and nothing said which line (or node) the caption belonged to.
-// This fixes both by construction. <EdgeLabelRenderer> is an HTML layer stacked
-// above ALL edge paths, so no line can ever cross a chip; and the chip hangs
-// directly under the edge's SOURCE card — captions name what the source does
-// ("api managed-by …", "gateway selects …"), so that is the node they must
-// visually attach to. Several captions on one card stack downward.
-const CAPTION_GAP = 10; // px between the card's bottom edge and its first chip
-const CAPTION_STEP = 17; // px between stacked chips
-
-function RelationshipEdge({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  style,
-  label,
-  data,
-}: EdgeProps) {
-  // Orthogonal routing — bezier curves between same-rank siblings loop
-  // unpleasantly.
-  const [path] = getSmoothStepPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
-  });
-  if (label == null) return <BaseEdge id={id} path={path} style={style} />;
-  const slot = (data as { labelSlot?: number } | undefined)?.labelSlot ?? 0;
-  const color = (style?.stroke as string) ?? "#64748b";
-  return (
-    <>
-      <BaseEdge id={id} path={path} style={style} />
-      <EdgeLabelRenderer>
-        <div
-          style={{
-            position: "absolute",
-            // (sourceX, sourceY) is the bottom-centre handle the line leaves
-            // from, so the chip sits threaded onto its own edge's first segment.
-            transform: `translate(-50%, 0) translate(${sourceX}px, ${sourceY + CAPTION_GAP + slot * CAPTION_STEP}px)`,
-            pointerEvents: "none",
-            background: "#fff",
-            border: `1px solid ${color}`,
-            color,
-            borderRadius: 8,
-            padding: "0 5px",
-            fontSize: 9,
-            fontWeight: 600,
-            lineHeight: "13px",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {label}
-        </div>
-      </EdgeLabelRenderer>
-    </>
-  );
-}
-
-// Module-level so the mapping keeps one identity across renders — xyflow warns
-// and re-creates all edges when it changes.
-const EDGE_TYPES = { rel: RelationshipEdge };
 
 // Escape hatch for lost viewports: one click re-frames the whole graph.
 // (Needs the ReactFlow context, hence a child component inside <ReactFlow>.)
@@ -466,7 +366,8 @@ function AnchorKeeper({
 
 export function GraphCanvas({
   visible,
-  relationships,
+  relations,
+  outlines,
   expanded,
   childCounts,
   marks,
@@ -482,8 +383,8 @@ export function GraphCanvas({
   onSelect,
 }: Props) {
   const { flowNodes, flowEdges } = useMemo(
-    () => layout(visible, relationships, childCounts, marks, expanded, selectedId),
-    [visible, relationships, childCounts, marks, expanded, selectedId],
+    () => layout(visible, outlines, childCounts, marks, expanded, selectedId),
+    [visible, outlines, childCounts, marks, expanded, selectedId],
   );
 
   // Clicking in the canvas keeps the clicked node under the cursor: the anchor
@@ -596,7 +497,6 @@ export function GraphCanvas({
         key={viewKey}
         nodes={flowNodes}
         edges={flowEdges}
-        edgeTypes={EDGE_TYPES}
         fitView
         // Whole-cluster views are wide; the default minZoom (0.5) would stop
         // fitView from actually fitting them.
@@ -658,6 +558,33 @@ export function GraphCanvas({
       >
         <Background />
         <Controls />
+        {relations.length > 0 && (
+          <Panel
+            position="top-right"
+            aria-label="Related to this"
+            className="max-w-xs rounded-md border border-slate-200 bg-white/95 px-3 py-2 shadow-sm"
+          >
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              related to this
+            </div>
+            <ul className="space-y-1">
+              {relations.map((r) => (
+                <li key={`${r.kind}-${r.phrase}`} className="flex items-center gap-2 text-xs">
+                  <span
+                    aria-hidden
+                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                    style={{ background: r.color }}
+                  />
+                  <span className="text-slate-700">{r.phrase}</span>
+                  <span className="ml-auto text-slate-400">
+                    {r.cardIds.length}
+                    {r.count !== r.cardIds.length ? ` (${r.count})` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
         <Panel position="top-left" className="flex items-center gap-2">
           {canShowParent && (
             <button
