@@ -145,6 +145,7 @@ const NOTHING_SELECTED = "Select a resource in the tree or graph to inspect it."
 beforeEach(() => {
   window.history.replaceState(null, "", "/");
   state.snapshot = snapshot;
+  delete (window as unknown as { runtime?: unknown }).runtime;
 });
 
 /** The ▸/▾ badge inside a card — structure, as opposed to the card body. */
@@ -388,21 +389,70 @@ describe("solo mode", () => {
   });
 });
 
-describe("climbing to the parent", () => {
-  it("offers no climb at the top of the tree", async () => {
-    renderApp();
-    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
-    expect(screen.queryByText(/show parent/i)).toBeNull();
-  });
+/**
+ * Stand in for the Wails runtime so the k9s handoff can be driven from a test.
+ * The desktop emits `kscope:focus` over IPC (cmd/kscope-desktop/focus.go) — it
+ * never goes through the URL, which is why ?focus= must mean something else.
+ */
+function stubDesktopRuntime() {
+  const handlers = new Map<string, (...a: unknown[]) => void>();
+  (window as unknown as { runtime: unknown }).runtime = {
+    EventsOn: (name: string, cb: (...a: unknown[]) => void) => {
+      handlers.set(name, cb);
+      return () => handlers.delete(name);
+    },
+  };
+  return (name: string, payload: unknown) => handlers.get(name)?.(payload);
+}
 
-  it("raises the root and keeps the branch below it open", async () => {
-    // Arrive as the k9s handoff does: ?focus= puts the resource at the top with
-    // its ancestors off-screen.
+describe("arriving from outside", () => {
+  it("restores a ?focus= selection without stranding the view on it", async () => {
+    // Every click writes ?focus= to the URL, so a reload must not leave the
+    // user marooned on a single leaf card with the rest of the map gone.
     window.history.replaceState(null, "", `/?focus=${encodeURIComponent(DEP)}`);
     renderApp();
+
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+    // Revealed and selected…
+    expect(window.location.search).toContain(encodeURIComponent(DEP));
+    // …but the map is still the map: the root is the cluster, not the target.
+    expect(nodeEl("cluster")).toBeTruthy();
+    expect(nodeEl(NS2)).toBeTruthy();
+  });
+
+  it("starts a k9s handoff at the resource, with its ancestors one click away", async () => {
+    const emit = stubDesktopRuntime();
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+
+    emit("kscope:focus", { id: DEP });
+
     await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
     expect(nodeEl("cluster")).toBeNull(); // ancestors not drawn
     expect(nodeEl(POD_GROUP)).toBeTruthy(); // own children are
+    expect(screen.getByText(/show parent/i)).toBeInTheDocument();
+  });
+
+  it("offers a climb even when the handoff lands on a leaf", async () => {
+    // A ConfigMap has nothing below it, so the climb is the only way out — it
+    // had better be on screen.
+    const emit = stubDesktopRuntime();
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+
+    emit("kscope:focus", { id: pods[0] });
+
+    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
+    expect(document.querySelectorAll(".react-flow__node")).toHaveLength(1);
+    expect(screen.getByText(/show parent/i)).toBeInTheDocument();
+  });
+
+  it("raises the root and keeps the branch below it open", async () => {
+    const emit = stubDesktopRuntime();
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    emit("kscope:focus", { id: DEP });
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
 
     fireEvent.click(screen.getByText(/show parent/i));
 
@@ -410,5 +460,11 @@ describe("climbing to the parent", () => {
     // Context gained without losing the place: the branch is still open.
     expect(nodeEl(DEP)).toBeTruthy();
     expect(nodeEl(POD_GROUP)).toBeTruthy();
+  });
+
+  it("offers no climb at the top of the tree", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    expect(screen.queryByText(/show parent/i)).toBeNull();
   });
 });

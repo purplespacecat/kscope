@@ -38,14 +38,11 @@ export default function App() {
   // Expansion state for the graph. Written only by user gestures — a toggle, a
   // reveal, "show parent", or the one-time seed below. Deliberately NOT derived
   // from selection: that was what collapsed things nobody asked to collapse.
-  const [tree, setTree] = useState<TreeState>(() => {
-    const focus = new URLSearchParams(window.location.search).get("focus");
-    return {
-      rootId: focus,
-      expanded: new Set(focus ? [focus] : []),
-      expandedGroups: new Set<string>(),
-    };
-  });
+  const [tree, setTree] = useState<TreeState>(() => ({
+    rootId: null,
+    expanded: new Set<string>(),
+    expandedGroups: new Set<string>(),
+  }));
   // "One branch at a time": opt-in auto-collapse of siblings on expand.
   const [solo, setSolo] = useState(false);
   // Bumped by reveals from outside the canvas, to ask it to re-frame.
@@ -75,13 +72,23 @@ export default function App() {
     prevNodes.current = nodes;
     setTree((cur) => {
       if (prev.length > 0 && cur.rootId) return prune(prev, nodes, cur, null).state;
-      // First snapshot. ?focus= wins if it is in scope; otherwise open the
-      // cluster root so the namespaces are showing — a single collapsed card
-      // would be consistent and useless.
-      const focus =
-        cur.rootId && nodes.some((n) => n.id === cur.rootId) ? cur.rootId : null;
-      const root = focus ?? nodes.find((n) => !n.parentId)?.id ?? nodes[0].id;
-      return { rootId: root, expanded: new Set([root]), expandedGroups: new Set() };
+      // First snapshot: open the cluster root so the namespaces are showing — a
+      // single collapsed card would be consistent and useless.
+      const root = nodes.find((n) => !n.parentId)?.id ?? nodes[0].id;
+      const seeded: TreeState = {
+        rootId: root,
+        expanded: new Set([root]),
+        expandedGroups: new Set<string>(),
+      };
+      // ?focus= is written on *every* click, so it is a restored selection, not
+      // a jump: reveal it inside the map rather than re-rooting on it. Rooting
+      // here stranded a reload on whatever card was last clicked — a leaf meant
+      // one card and an empty canvas. The k9s handoff is the thing that
+      // re-roots, and it arrives over IPC (see the focus effect below).
+      const focus = new URLSearchParams(window.location.search).get("focus");
+      return focus && nodes.some((n) => n.id === focus)
+        ? reveal(nodes, seeded, focus, false)
+        : seeded;
     });
     setSelectedId((cur) => (cur && nodes.some((n) => n.id === cur) ? cur : null));
   }, [nodes]);
