@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GraphEdge, GraphNode } from "../types/graph";
 import {
+  controllerMarks,
   prune,
   resolveEdges,
   reveal,
@@ -37,6 +38,7 @@ const NODES: GraphNode[] = [
   n("cm/b", "ConfigMap", "b", "ns/app"),
   n("cm/c", "ConfigMap", "c", "ns/app"),
   n("svc/web", "Service", "web", "ns/app"),
+  n("hr/web", "HelmRelease", "web", "ns/app"),
 ];
 
 const state = (over: Partial<TreeState> = {}): TreeState => ({
@@ -273,6 +275,8 @@ describe("prune", () => {
 });
 
 describe("resolveEdges", () => {
+  // Arrows answer "what is this card wired to", so they hang off the selection.
+  const SEL = "p/web-1-a";
   const e = (id: string, source: string, target: string, kind = "mounts"): GraphEdge => ({
     id,
     source,
@@ -284,7 +288,7 @@ describe("resolveEdges", () => {
   it("re-points a hidden endpoint to the group card standing in for it", () => {
     const st = state({ expanded: new Set(["cluster", "ns/app", "d/web", "rs/web-1"]) });
     const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "cm/a")], v);
+    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "cm/a")], v, SEL);
     expect(r.map(pair)).toEqual(["p/web-1-a->__kg__ns/app__ConfigMap"]);
   });
 
@@ -292,18 +296,14 @@ describe("resolveEdges", () => {
     // The Pod is not on screen; the Deployment is the nearest thing that is.
     const st = state({ expanded: new Set(["cluster", "ns/app"]) });
     const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "svc/web")], v);
+    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "svc/web")], v, SEL);
     expect(r.map(pair)).toEqual(["d/web->svc/web"]);
   });
 
   it("merges edges that collapse onto the same pair, carrying a count", () => {
     const st = state({ expanded: new Set(["cluster", "ns/app", "d/web", "rs/web-1"]) });
     const v = visibleTree(NODES, st);
-    const r = resolveEdges(
-      NODES,
-      [e("e1", "p/web-1-a", "cm/a"), e("e2", "p/web-1-a", "cm/b")],
-      v,
-    );
+    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "cm/a"), e("e2", "p/web-1-a", "cm/b")], v, SEL);
     expect(r).toHaveLength(1);
     expect(r[0].count).toBe(2);
   });
@@ -314,7 +314,7 @@ describe("resolveEdges", () => {
       expandedGroups: new Set(["__kg__ns/app__ConfigMap"]),
     });
     const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "cm/a")], v);
+    const r = resolveEdges(NODES, [e("e1", "p/web-1-a", "cm/a")], v, SEL);
     expect(r.map(pair)).toEqual(["p/web-1-a->cm/a"]);
   });
 
@@ -322,20 +322,93 @@ describe("resolveEdges", () => {
     const st = state({ expanded: new Set(["cluster", "ns/app"]) });
     const v = visibleTree(NODES, st);
     // Both the ReplicaSet and the Pod stand in as the Deployment.
-    expect(resolveEdges(NODES, [e("e1", "rs/web-1", "p/web-1-a")], v)).toHaveLength(0);
+    expect(resolveEdges(NODES, [e("e1", "rs/web-1", "p/web-1-a")], v, SEL)).toHaveLength(0);
   });
 
   it("drops an edge to something outside the visible root's subtree", () => {
     const st = state({ rootId: "ns/app", expanded: new Set(["ns/app"]) });
     const v = visibleTree(NODES, st);
-    expect(resolveEdges(NODES, [e("e1", "svc/web", "ns/other")], v)).toHaveLength(0);
+    // Selected, so it is not filtered by scope — it is dropped because the
+    // other end has no visible stand-in at all.
+    expect(
+      resolveEdges(NODES, [e("e1", "svc/web", "ns/other")], v, "svc/web"),
+    ).toHaveLength(0);
   });
 
   it("keeps a single edge uncounted", () => {
     const st = state({ expanded: new Set(["cluster", "ns/app"]) });
     const v = visibleTree(NODES, st);
-    const r = resolveEdges(NODES, [e("e1", "d/web", "svc/web")], v);
+    const r = resolveEdges(NODES, [e("e1", "d/web", "svc/web")], v, "d/web");
     expect(r[0].count).toBe(1);
     expect(r[0].kind).toBe("mounts");
+  });
+});
+
+describe("resolveEdges scoping", () => {
+  const e = (id: string, source: string, target: string, kind = "mounts") => ({
+    id,
+    source,
+    target,
+    kind,
+  });
+  const open = state({ expanded: new Set(["cluster", "ns/app", "d/web", "rs/web-1"]) });
+
+  it("draws nothing when nothing is selected", () => {
+    const v = visibleTree(NODES, open);
+    expect(resolveEdges(NODES, [e("e1", "p/web-1-a", "svc/web")], v, null)).toHaveLength(0);
+  });
+
+  it("draws only the edges touching the selected card", () => {
+    const v = visibleTree(NODES, open);
+    const r = resolveEdges(
+      NODES,
+      [
+        e("e1", "p/web-1-a", "svc/web"),
+        e("e2", "d/web", "svc/web"), // nothing to do with the selection
+      ],
+      v,
+      "p/web-1-a",
+    );
+    expect(r.map((x) => x.id)).toHaveLength(1);
+    expect(r[0].source).toBe("p/web-1-a");
+  });
+
+  it("follows the selection in either direction", () => {
+    const v = visibleTree(NODES, open);
+    const r = resolveEdges(NODES, [e("e1", "svc/web", "p/web-1-a", "selects")], v, "p/web-1-a");
+    expect(r).toHaveLength(1);
+  });
+
+  // The card already carries a mark for its controller and its own Kind, so
+  // repeating either as an arrow is clutter that says nothing new.
+  it("never draws managed-by or instance-of", () => {
+    const v = visibleTree(NODES, open);
+    const r = resolveEdges(
+      NODES,
+      [
+        e("e1", "p/web-1-a", "svc/web", "managed-by"),
+        e("e2", "p/web-1-a", "svc/web", "instance-of"),
+        e("e3", "p/web-1-a", "svc/web", "mounts"),
+      ],
+      v,
+      "p/web-1-a",
+    );
+    expect(r.map((x) => x.kind)).toEqual(["mounts"]);
+  });
+});
+
+describe("controllerMarks", () => {
+  it("names the controller that manages a node", () => {
+    const marks = controllerMarks(NODES, [
+      { id: "m1", source: "d/web", target: "hr/web", kind: "managed-by" },
+    ]);
+    expect(marks.get("d/web")).toBe("HelmRelease");
+  });
+
+  it("ignores edges that are not management", () => {
+    const marks = controllerMarks(NODES, [
+      { id: "m1", source: "d/web", target: "svc/web", kind: "mounts" },
+    ]);
+    expect(marks.size).toBe(0);
   });
 });

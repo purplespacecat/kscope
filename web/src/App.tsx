@@ -12,6 +12,7 @@ import {
 } from "./lib/desktop";
 import type { GraphEdge, GraphNode } from "./types/graph";
 import {
+  controllerMarks,
   prune,
   resolveEdges,
   reveal,
@@ -95,9 +96,10 @@ export default function App() {
 
   const visible = useMemo(() => visibleTree(nodes, tree), [nodes, tree]);
   const relationships = useMemo(
-    () => resolveEdges(nodes, allEdges, visible),
-    [nodes, allEdges, visible],
+    () => resolveEdges(nodes, allEdges, visible, selectedId),
+    [nodes, allEdges, visible, selectedId],
   );
+  const marks = useMemo(() => controllerMarks(nodes, allEdges), [nodes, allEdges]);
   const childCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const n of nodes) {
@@ -273,6 +275,7 @@ export default function App() {
               relationships={relationships}
               expanded={tree.expanded}
               childCounts={childCounts}
+              marks={marks}
               canShowParent={!!rootParent}
               parentLabel={rootParent?.name}
               selectedId={selected?.id ?? null}

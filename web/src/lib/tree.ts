@@ -317,11 +317,40 @@ export interface ResolvedEdge {
  * pairs that resolve to the same card, which would render as a self-loop saying
  * nothing.
  */
+/**
+ * Edge kinds that are a property of the node rather than wiring between nodes.
+ * "Managed by Flux" and "an instance of this CRD" are already on the card — as
+ * the controller mark and as its Kind — so drawing them again is a line that
+ * tells the reader nothing they cannot see.
+ */
+const MARK_KINDS = new Set(["managed-by", "instance-of"]);
+
+/** nodeId → the Kind of whatever manages it, for a card mark. */
+export function controllerMarks(
+  all: GraphNode[],
+  edges: GraphEdge[],
+): Map<string, string> {
+  const byId = new Map(all.map((x) => [x.id, x]));
+  const marks = new Map<string, string>();
+  for (const e of edges) {
+    if (e.kind !== "managed-by") continue;
+    const owner = byId.get(e.target);
+    if (owner) marks.set(e.source, owner.kind);
+  }
+  return marks;
+}
+
 export function resolveEdges(
   all: GraphNode[],
   edges: GraphEdge[],
   visible: Visible,
+  selectedId: string | null,
 ): ResolvedEdge[] {
+  // Arrows answer one question — "what is THIS wired to" — so they belong to
+  // the selection. Drawing every relationship among every visible card was
+  // what made a namespace look like a plate of spaghetti: dozens of lines, none
+  // of them the answer to anything the reader had asked.
+  if (!selectedId) return [];
   const byId = new Map(all.map((x) => [x.id, x]));
   const onScreen = new Set(visible.nodes.map((x) => x.id));
   const holder = new Map<string, string>(); // member id → the group card hiding it
@@ -346,6 +375,8 @@ export function resolveEdges(
   // safe composite key.
   const merged = new Map<string, ResolvedEdge>();
   for (const e of edges) {
+    if (MARK_KINDS.has(e.kind)) continue;
+    if (e.source !== selectedId && e.target !== selectedId) continue;
     const source = standIn(e.source);
     const target = standIn(e.target);
     if (!source || !target || source === target) continue;

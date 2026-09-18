@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { Snapshot } from "../types/graph";
@@ -74,6 +74,7 @@ const NS = "core/namespace/web";
 const DEP = "apps/deployment/web/api";
 const DEP_B = "apps/deployment/web/worker";
 const KUST = "kustomize/kustomization/web/apps";
+const CM = "core/configmap/web/cfg";
 
 // Two deployments managed by one Kustomization (fan-in: a caption per source
 // card), plus two "uses" edges leaving ONE deployment (fan-out: a single
@@ -89,12 +90,17 @@ const captionSnapshot: Snapshot = {
     { id: DEP, kind: "Deployment", name: "api", parentId: NS, namespace: "web", health: "healthy" },
     { id: DEP_B, kind: "Deployment", name: "worker", parentId: NS, namespace: "web", health: "healthy" },
     { id: KUST, kind: "Kustomization", name: "apps", parentId: NS, namespace: "web", health: "healthy" },
+    { id: CM, kind: "ConfigMap", name: "cfg", parentId: NS, namespace: "web", health: "healthy" },
   ],
   edges: [
+    // managed-by must never become a line: the card carries a mark instead.
     { id: "e1", source: DEP, target: KUST, kind: "managed-by" },
     { id: "e2", source: DEP_B, target: KUST, kind: "managed-by" },
+    // Two "uses" out of one card: a fan-out captions once, not twice.
     { id: "e3", source: DEP, target: DEP_B, kind: "uses" },
     { id: "e4", source: DEP, target: KUST, kind: "uses" },
+    // A second kind out of the same card, to stack below the first.
+    { id: "e5", source: DEP, target: CM, kind: "mounts" },
   ],
   stats: { counts: {}, durationMs: 1 },
 };
@@ -124,16 +130,31 @@ const nodeEl = (id: string) =>
  * now: a fresh view shows the cluster's namespaces and waits to be asked for
  * anything deeper, so a test that wants edges has to ask.
  */
-async function renderExpanded() {
+async function renderExpanded(focus?: string) {
+  if (focus) window.history.replaceState(null, "", `/?focus=${encodeURIComponent(focus)}`);
   renderApp();
-  const toggle = await waitFor(() => {
-    const el = nodeEl(NS)?.querySelector("[data-toggle]");
-    if (!el) throw new Error("namespace not on screen yet");
-    return el;
-  });
-  fireEvent.click(toggle);
+  // ?focus= reveals its target, so the namespace is already open in that case —
+  // clicking the toggle would close it again.
+  if (!focus) {
+    const toggle = await waitFor(() => {
+      const el = nodeEl(NS)?.querySelector("[data-toggle]");
+      if (!el) throw new Error("namespace not on screen yet");
+      return el;
+    });
+    fireEvent.click(toggle);
+  }
   await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
 }
+
+// NOTE on why selection arrives through ?focus= rather than a click here.
+// Selecting re-renders the canvas with a fresh node array; xyflow then drops its
+// measurements and re-measures through ResizeObserver. A real observer reports
+// again, but a stub only fires when a NEW element is observed — so under jsdom
+// nothing re-measures and every edge silently disappears. Verified directly: 4
+// edges with no selection, 0 after a click. Seeding the selection before the
+// first paint measures once and keeps the edges, which is the state these tests
+// are actually about. Which arrows get drawn is unit-tested in lib/tree.test.ts,
+// where no DOM is involved at all.
 
 function renderApp() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -149,56 +170,79 @@ beforeEach(() => {
 });
 
 describe("edge captions", () => {
+  // Scoped to the canvas: the details panel lists the same relationship names
+  // in prose, and matching those would make every count wrong.
+  const chipsFor = (text: string) => {
+    const layer = document.querySelector(".react-flow__edgelabel-renderer");
+    if (!layer) return [];
+    return [...layer.querySelectorAll("*")].filter(
+      (el) => el.children.length === 0 && el.textContent === text,
+    );
+  };
+
   // A caption chip must sit within its own source card's horizontal span —
   // that's what "clearly attached to this node" means measurably. Handle
-  // measurement is degenerate under jsdom (getBoundingClientRect is all
-  // zeros), so the assertion is span membership rather than exact
-  // bottom-centre alignment.
+  // geometry is degenerate under jsdom (getBoundingClientRect is all zeros), so
+  // the assertion is span membership rather than exact bottom-centre alignment.
   const withinCard = (chipX: number, cardId: string) => {
     const left = translateOf(nodeEl(cardId)!).x;
     return chipX >= left && chipX <= left + NODE_W;
   };
 
-  it("pins each caption to its own source card, above the edge lines", async () => {
+  it("draws no relationship lines until a card is asked about", async () => {
     await renderExpanded();
-    const chips = await waitFor(() => {
-      const found = screen.getAllByText("managed-by");
-      expect(found).toHaveLength(2); // fan-in: one per source, none at midpoints
-      return found;
-    });
+    await new Promise((r) => setTimeout(r, 300));
 
-    // "Never crossed by lines" is structural: the chips render in xyflow's
-    // HTML edge-label layer, which stacks above the whole edge SVG.
-    for (const chip of chips) {
-      expect(chip.closest(".react-flow__edgelabel-renderer")).toBeTruthy();
-    }
-
-    // Each chip hangs under its own managed deployment — not the shared
-    // target, not the other source.
-    const xs = chips.map((c) => translateOf(c).x).sort((a, b) => a - b);
-    const cards = [DEP, DEP_B].sort(
-      (a, b) => translateOf(nodeEl(a)!).x - translateOf(nodeEl(b)!).x,
-    );
-    expect(withinCard(xs[0], cards[0])).toBe(true);
-    expect(withinCard(xs[1], cards[1])).toBe(true);
-    expect(withinCard(xs[0], cards[1])).toBe(false);
-    expect(withinCard(xs[1], cards[0])).toBe(false);
+    expect(chipsFor("uses")).toHaveLength(0);
+    expect(chipsFor("mounts")).toHaveLength(0);
   });
 
-  it("captions a kind once per source and stacks different kinds below it", async () => {
-    await renderExpanded();
-    await waitFor(() => expect(screen.getAllByText("managed-by")).toHaveLength(2));
+  it("captions only the selected card's own wiring", async () => {
+    await renderExpanded(DEP);
+    console.log("DEBUG edges:", document.querySelectorAll(".react-flow__edge").length,
+      "nodes:", document.querySelectorAll(".react-flow__node").length,
+      "edgesSvg:", document.querySelector(".react-flow__edges")?.innerHTML.slice(0, 200),
+      "panelHas:", document.body.textContent?.includes("uses"));
 
-    // Two "uses" edges leave DEP; the caption appears once.
-    const uses = screen.getAllByText("uses");
-    expect(uses).toHaveLength(1);
+    const chips = await waitFor(() => {
+      const found = chipsFor("uses");
+      expect(found).toHaveLength(1); // fan-out: one caption per kind per source
+      return found;
+    });
+    // Rendered in xyflow's HTML edge-label layer, which stacks above the whole
+    // edge SVG — so no line can ever strike a caption through.
+    expect(chips[0].closest(".react-flow__edgelabel-renderer")).toBeTruthy();
+    expect(withinCard(translateOf(chips[0]).x, DEP)).toBe(true);
+  });
 
-    // …under DEP, one step below DEP's "managed-by" chip instead of on top
-    // of it.
-    const mine = screen
-      .getAllByText("managed-by")
-      .find((c) => withinCard(translateOf(c).x, DEP))!;
-    expect(withinCard(translateOf(uses[0]).x, DEP)).toBe(true);
-    expect(translateOf(uses[0]).y).toBeCloseTo(translateOf(mine).y + CAPTION_STEP, 3);
+  it("stacks a second kind below the first, under the same card", async () => {
+    await renderExpanded(DEP);
+
+    await waitFor(() => expect(chipsFor("uses")).toHaveLength(1));
+    const uses = chipsFor("uses")[0];
+    const mounts = chipsFor("mounts")[0];
+    expect(withinCard(translateOf(mounts).x, DEP)).toBe(true);
+    expect(translateOf(mounts).y).toBeCloseTo(translateOf(uses).y + CAPTION_STEP, 3);
+  });
+
+  it("shows a relationship pointing at the selected card, not only out of it", async () => {
+    // worker is the target of DEP's "uses" and the source of a managed-by.
+    await renderExpanded(DEP_B);
+
+    // The incoming link is drawn, captioned under its own source card…
+    await waitFor(() => expect(chipsFor("uses")).toHaveLength(1));
+    // …while wiring that does not touch worker at all stays off the canvas.
+    expect(chipsFor("mounts")).toHaveLength(0);
+    expect(chipsFor("managed-by")).toHaveLength(0);
+  });
+
+  it("marks the managing controller on the card instead of drawing a line", async () => {
+    await renderExpanded(DEP);
+    await waitFor(() => expect(chipsFor("uses")).toHaveLength(1));
+
+    // The relationship is still reported — as a mark on the card, which says the
+    // same thing in a badge's worth of space instead of a line across the view.
+    expect(chipsFor("managed-by")).toHaveLength(0);
+    expect(within(nodeEl(DEP) as HTMLElement).getByText("Kustomization")).toBeInTheDocument();
   });
 });

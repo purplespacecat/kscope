@@ -41,6 +41,8 @@ interface Props {
   expanded: Set<string>;
   /** id → number of containment children, for the toggle badge. */
   childCounts: Map<string, number>;
+  /** id → Kind of whatever manages it, shown as a mark instead of an arrow. */
+  marks: Map<string, string>;
   /** Whether the visible root has a parent to climb to. */
   canShowParent: boolean;
   /** Name of the parent, for the climb control's label. */
@@ -83,6 +85,7 @@ function layout(
   visible: Visible,
   relationships: ResolvedEdge[],
   childCounts: Map<string, number>,
+  marks: Map<string, string>,
   expanded: Set<string>,
   selectedId: string | null,
 ): Layout {
@@ -132,12 +135,16 @@ function layout(
               </span>
               <span className="block text-[10px] text-slate-400">{n.kind}</span>
             </span>
-            {n.gitops && (
+            {(n.gitops || marks.has(n.id)) && (
               <span
-                title={`Managed by Flux ${n.gitops.kind} ${n.gitops.namespace}/${n.gitops.name}`}
+                title={
+                  n.gitops
+                    ? `Managed by Flux ${n.gitops.kind} ${n.gitops.namespace}/${n.gitops.name}`
+                    : `Managed by ${marks.get(n.id)}`
+                }
                 className="shrink-0 rounded bg-fuchsia-50 px-1 text-[9px] font-semibold text-fuchsia-600"
               >
-                flux
+                {n.gitops ? "flux" : marks.get(n.id)}
               </span>
             )}
             {kids > 0 && (
@@ -253,9 +260,12 @@ function layout(
       target: e.target,
       ...caption,
       type: "rel",
+      // Minimal by design: one thin line per relationship, no dash pattern.
+      // These only exist for the selected card now, so they can be quiet and
+      // still be found.
       style: rel
-        ? { stroke: rel.stroke, strokeDasharray: "6 3" }
-        : { stroke: "#cbd5e1" },
+        ? { stroke: rel.stroke, strokeWidth: 1.5 }
+        : { stroke: "#94a3b8", strokeWidth: 1.5 },
     });
   }
 
@@ -459,6 +469,7 @@ export function GraphCanvas({
   relationships,
   expanded,
   childCounts,
+  marks,
   canShowParent,
   parentLabel,
   selectedId,
@@ -471,8 +482,8 @@ export function GraphCanvas({
   onSelect,
 }: Props) {
   const { flowNodes, flowEdges } = useMemo(
-    () => layout(visible, relationships, childCounts, expanded, selectedId),
-    [visible, relationships, childCounts, expanded, selectedId],
+    () => layout(visible, relationships, childCounts, marks, expanded, selectedId),
+    [visible, relationships, childCounts, marks, expanded, selectedId],
   );
 
   // Clicking in the canvas keeps the clicked node under the cursor: the anchor

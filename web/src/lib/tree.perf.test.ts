@@ -52,7 +52,7 @@ describe("large-group performance", () => {
     const edges = all
       .filter((n) => n.kind === "Pod")
       .map((n) => ({ id: `e${n.id}`, source: n.id, target: "ns", kind: "uses" }));
-    resolveEdges(all, edges, v);
+    resolveEdges(all, edges, v, "p/0");
     const ms = performance.now() - t0;
     expect(v.nodes).toHaveLength(pods + 3);
     expect(ms).toBeLessThan(100);
