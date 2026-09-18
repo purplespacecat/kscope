@@ -141,19 +141,14 @@ function layout(
               </span>
             )}
             {kids > 0 && (
-              <button
-                type="button"
+              <span
                 data-toggle={n.id}
                 aria-label={`${isOpen ? "Collapse" : "Expand"} ${n.name}`}
-                title={
-                  isOpen
-                    ? `Collapse — hides ${kids} inside`
-                    : `Expand — ${kids} inside`
-                }
-                className="nodrag shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600 hover:bg-slate-300"
+                title={isOpen ? `${kids} inside — click to collapse` : `${kids} inside — click to expand`}
+                className="shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600"
               >
                 {isOpen ? "▾" : "▸"} {kids}
-              </button>
+              </span>
             )}
           </div>
         ),
@@ -197,18 +192,16 @@ function layout(
                 {gr.expanded ? "click to collapse" : "click to expand"}
               </span>
             </span>
-            <button
-              type="button"
+            <span
               data-toggle={gr.id}
               aria-label={`${gr.expanded ? "Collapse" : "Expand"} ${kindPlural(gr.kind)}`}
-              className="nodrag shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600 hover:bg-slate-300"
+              className="shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600"
             >
               {gr.expanded ? "▾" : "▸"} {gr.memberIds.length}
-            </button>
+            </span>
           </div>
         ),
         groupToggle: gr.id,
-        groupExpanded: gr.expanded,
       },
       style: {
         width: NODE_W,
@@ -602,43 +595,31 @@ export function GraphCanvas({
         // foot-gun — the big translucent group containers read as background,
         // and "panning" on one flings the entire grid off-screen.
         nodesDraggable={false}
-        onNodeClick={(event, n) => {
+        onNodeClick={(_, n) => {
           // Dismiss on click even when nothing moves — the layout may still
           // shift under the tooltip.
           clearTip();
-          const d = n.data as {
-            raw?: GraphNode;
-            groupToggle?: string;
-            groupExpanded?: boolean;
-          };
+          const d = n.data as { raw?: GraphNode; groupToggle?: string };
           // Where the clicked card is right now — the position to hold across
-          // the reflow so opening never teleports the thing you clicked.
+          // the reflow so toggling never teleports the thing you clicked.
           const here = absPos.get(n.id) ?? null;
-          // One rule for every card: the body OPENS it, the arrow toggles it.
-          // Opening on a body click is what makes clicking a Deployment do
-          // something; never closing on one is what stops a click meant for the
-          // details panel costing you the branch you just opened.
-          const hitArrow = !!(event.target as HTMLElement | null)?.closest?.(
-            "[data-toggle]",
-          );
 
+          // One gesture: clicking a card toggles it, and the ▸/▾ badge is an
+          // indicator rather than a second control. Anywhere on the card does
+          // the same thing, so there is nothing to aim at and nothing to learn.
           if (d.groupToggle) {
-            if (!hitArrow && d.groupExpanded) return; // already open: nothing to do
             if (here) setAnchor({ id: d.groupToggle, pos: here });
             onToggleGroup(d.groupToggle);
             return;
           }
           if (!d.raw) return;
 
-          if (hitArrow) {
-            // Structure only — the arrow must not reach the details panel.
-            if (here) setAnchor({ id: d.raw.id, pos: here });
-            onToggleExpand(d.raw.id);
-            return;
-          }
           onSelect(d.raw);
-          const hasKids = (childCounts.get(d.raw.id) ?? 0) > 0;
-          if (hasKids && !expanded.has(d.raw.id)) {
+          // A card with nothing inside it has nothing to toggle. This guard is
+          // not observable — expanding a childless node renders identically —
+          // so no test pins it; it is here to keep meaningless ids out of
+          // `expanded`, which prune and any future "collapse all" would inherit.
+          if ((childCounts.get(d.raw.id) ?? 0) > 0) {
             if (here) setAnchor({ id: d.raw.id, pos: here });
             onToggleExpand(d.raw.id);
           }

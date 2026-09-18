@@ -195,18 +195,20 @@ describe("expansion is the user's", () => {
   // THE regression this whole change exists to prevent. Under the old model,
   // selecting re-derived the visible set from the selection, so clicking a
   // sibling silently threw away everything the user had opened.
-  it("leaves the open tree exactly as it was when a card is selected", async () => {
+  it("leaves every other branch exactly as it was when a card is clicked", async () => {
     renderApp();
-    await expandPath(NS, DEP);
+    await expandPath(NS, NS2, DEP);
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
-    const openBefore = document.querySelectorAll(".react-flow__node").length;
+    expect(nodeEl(DEP2)).toBeTruthy();
 
-    fireEvent.click(nodeEl(DEP)!); // the card body: details, not structure
-    await waitFor(() => expect(screen.queryByText(NOTHING_SELECTED)).toBeNull());
+    fireEvent.click(nodeEl(DEP)!); // toggles DEP, and nothing else
 
-    expect(document.querySelectorAll(".react-flow__node")).toHaveLength(openBefore);
-    expect(nodeEl(POD_GROUP)).toBeTruthy(); // still open
-    expect(nodeEl(NS2)).toBeTruthy(); // sibling branch not pruned
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeNull());
+    // The old model rebuilt the whole view from the selection, so a click here
+    // threw away the other namespace. Nothing outside this card may move.
+    expect(nodeEl(NS2)).toBeTruthy();
+    expect(nodeEl(DEP2)).toBeTruthy();
+    expect(nodeEl(NS)).toBeTruthy();
   });
 
   // One rule everywhere: clicking a card opens it, clicking its arrow closes it.
@@ -232,46 +234,37 @@ describe("expansion is the user's", () => {
     expect(nodeEl(DEP)).toBeTruthy();
   });
 
-  it("does not close an open card when its body is clicked again", async () => {
-    // Clicking to read the details panel must never cost you the branch.
+  it("closes an open card when its body is clicked again", async () => {
     renderApp();
     await expandPath(NS);
     await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
 
     fireEvent.click(nodeEl(NS)!);
-    fireEvent.click(nodeEl(NS)!);
-
-    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
-  });
-
-  it("closes from the arrow, and leaves the selection where it was", async () => {
-    renderApp();
-    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
-    fireEvent.click(nodeEl(DEP ? NS : NS)!); // open + select the namespace
-    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
-    const selected = screen.queryByText(NOTHING_SELECTED);
-    expect(selected).toBeNull();
-
-    fireEvent.click(toggleEl(NS)!);
 
     await waitFor(() => expect(nodeEl(DEP)).toBeNull());
-    // The arrow is structure only: it must not reach the details panel.
-    expect(screen.queryByText(NOTHING_SELECTED)).toBeNull();
+    expect(nodeEl(NS)).toBeTruthy(); // the card itself stays
   });
 
-  it("opens a group card from its body and closes it from its arrow", async () => {
+  it("treats the arrow and the card as the same gesture", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+
+    fireEvent.click(toggleEl(NS)!); // arrow opens
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+    fireEvent.click(nodeEl(NS)!); // body closes
+    await waitFor(() => expect(nodeEl(DEP)).toBeNull());
+    fireEvent.click(nodeEl(NS)!); // body opens again
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+  });
+
+  it("opens and closes a group card from its body", async () => {
     renderApp();
     await expandPath(NS, DEP);
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
 
     fireEvent.click(nodeEl(POD_GROUP)!);
     await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
-
-    // Body click again must not close it — same rule as a resource card.
     fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
-
-    fireEvent.click(toggleEl(POD_GROUP)!);
     await waitFor(() => expect(nodeEl(pods[0])).toBeNull());
   });
 
@@ -313,14 +306,17 @@ describe("expansion is the user's", () => {
     renderApp();
     await expandPath(NS, DEP);
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
-    expect(await screen.findByText(NOTHING_SELECTED)).toBeInTheDocument();
+    // Expanding by clicking selects as it goes, so the Deployment is current.
+    // The URL is the unambiguous record of that — the card's own name appears
+    // in the tree and the details panel too.
+    expect(window.location.search).toContain(encodeURIComponent(DEP));
 
     fireEvent.click(nodeEl(POD_GROUP)!);
     await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
 
-    // Group cards aren't resources: expanding one must not hijack the details
-    // panel.
-    expect(screen.getByText(NOTHING_SELECTED)).toBeInTheDocument();
+    // A group card is not a resource: it has no details to show, so it must not
+    // take the selection away from whatever does.
+    expect(window.location.search).toContain(encodeURIComponent(DEP));
   });
 
   // A reveal can open several levels at once, so the target may land anywhere
