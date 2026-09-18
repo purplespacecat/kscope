@@ -14,3 +14,43 @@ body {
   @apply bg-slate-50 text-slate-800 antialiased;
   font-family: system-ui, "Segoe UI", Roboto, sans-serif;
 }
+
+/*
+ * Hover affordance for graph cards. Every card is clickable — a click toggles
+ * it open or closed — so hovering has to say so.
+ *
+ * Drawn as a ::after ring rather than by changing the card's own border or
+ * box-shadow: those are set inline per card (health bar, selection ring,
+ * relationship outline) and a stylesheet rule would lose to them without
+ * !important. An overlay sidesteps the fight entirely and composes with
+ * whatever state the card is already in.
+ *
+ * No `transform` here either — xyflow positions every node with an inline
+ * transform, so a hover lift would throw the card across the canvas.
+ */
+.react-flow__node {
+  cursor: pointer;
+}
+
+.react-flow__node::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 11px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  box-shadow:
+    0 0 0 2px rgba(15, 23, 42, 0.28),
+    0 6px 16px rgba(15, 23, 42, 0.14);
+}
+
+.react-flow__node:hover::after {
+  opacity: 1;
+}
+
+/* Lift the hovered card above its neighbours so the ring is never clipped by
+   the card ranked next to it. */
+.react-flow__node:hover {
+  z-index: 10;
+}
