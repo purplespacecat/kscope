@@ -334,32 +334,25 @@ export function edgePhrase(
  * either end of the edge.
  */
 const MEANING: Record<string, string> = {
-  mounts:
-    "A volume in the pod spec points at this ConfigMap, Secret or PersistentVolumeClaim, so it is mounted into the container's filesystem.",
-  references:
-    "The pod reads values from this ConfigMap or Secret through env, envFrom or an image pull secret — passed in, not mounted as a file.",
-  uses: "The pod runs under this ServiceAccount, so that is the identity it presents to the API server.",
-  selects:
-    "A label selector currently matches — computed against the pod's actual labels at discovery time, not a reference anyone wrote down.",
-  exposes:
-    "An Ingress rule names this Service as a backend, so requests arriving on that host or path are routed to it.",
-  binds:
-    "The storage chain behind a claim: PersistentVolumeClaim to PersistentVolume to StorageClass.",
-  "scheduled-on": "The pod was running on this cluster Node when the snapshot was taken.",
-  "depends-on":
-    "Part of the infrastructure spine — the control plane components a cluster needs to function.",
-  "managed-by": "A GitOps controller owns this resource; editing it directly will be reverted.",
-  "sourced-from": "The manifests for this Flux object are pulled from this repository.",
-  "instance-of": "A custom resource and the CustomResourceDefinition that declares its kind.",
+  mounts: "Mounted into the container's filesystem as a volume.",
+  references: "Read as environment variables, not mounted as a file.",
+  uses: "The pod runs under this ServiceAccount.",
+  selects: "Matched by a label selector.",
+  exposes: "An Ingress rule routes requests to this Service.",
+  binds: "The storage chain: claim, to volume, to class.",
+  "scheduled-on": "The pod was running on this node.",
+  "depends-on": "Part of the cluster's control-plane spine.",
+  "managed-by": "A GitOps controller owns this; direct edits get reverted.",
+  "sourced-from": "Manifests are pulled from this repository.",
+  "instance-of": "The definition that declares this kind.",
 };
 
 /** Overrides where the source's Kind changes what the relationship means. */
 const MEANING_BY_SOURCE: Record<string, Record<string, string>> = {
   selects: {
-    Service:
-      "This Service's label selector currently matches the pod's labels, so traffic sent to the Service can land on it. Computed from the pod's actual labels, not a stored reference — which is why it catches label drift.",
+    Service: "This Service's selector matches the pod's labels, so traffic reaches it.",
     NetworkPolicy:
-      "This NetworkPolicy's podSelector currently matches the pod's labels, so the policy governs that pod's traffic. Note an empty podSelector matches every pod in the namespace.",
+      "This policy matches the pod. An empty selector matches the whole namespace.",
   },
 };
 

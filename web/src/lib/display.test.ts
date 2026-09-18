@@ -122,6 +122,30 @@ describe("edgeMeaning", () => {
     expect(np).toMatch(/polic/i);
   });
 
+  // A tooltip is read at a glance or not at all. Anything longer than a clause
+  // is a paragraph hovering over the thing it is meant to explain.
+  it("keeps every explanation to one short sentence", () => {
+    const kinds = [
+      "mounts",
+      "references",
+      "uses",
+      "selects",
+      "exposes",
+      "binds",
+      "scheduled-on",
+      "depends-on",
+      "managed-by",
+      "sourced-from",
+      "instance-of",
+    ];
+    for (const kind of [...kinds, "selects:Service", "selects:NetworkPolicy"]) {
+      const [k, src] = kind.split(":");
+      const text = edgeMeaning(k, src)!;
+      expect(text, kind).toBeTruthy();
+      expect(text.length, `${kind}: ${text}`).toBeLessThanOrEqual(90);
+    }
+  });
+
   it("says nothing rather than something empty for a kind it has no words for", () => {
     expect(edgeMeaning("frobnicates", undefined)).toBeUndefined();
   });

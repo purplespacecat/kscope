@@ -255,8 +255,9 @@ describe("relationship legend", () => {
 
     const row = within(el).getByText("routed to by").closest("[title]") as HTMLElement;
     // The Service reading of a label-selector match, not the generic one — the
-    // phrase alone never says how kscope knows this.
-    expect(row.title).toMatch(/label selector/i);
+    // phrase alone never says how kscope knows this. "traffic" is what only the
+    // Service wording says, so it is what makes this test distinguish them.
+    expect(row.title).toMatch(/selector/i);
     expect(row.title).toMatch(/traffic/i);
   });
 
