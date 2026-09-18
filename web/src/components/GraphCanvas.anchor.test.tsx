@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // fireEvent, not user-event: a full pointer sequence reaches d3-zoom's mousedown
 // handler, which dereferences `event.view` — null on jsdom-dispatched events.
 // Only the React onClick matters here.
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { Snapshot } from "../types/graph";
@@ -188,9 +188,42 @@ describe("expansion is the user's", () => {
       expect(nodeEl(pods[0])).toBeTruthy();
       expect(translateOf(nodeEl(POD_GROUP)!)).not.toEqual(beforeLayout);
     });
-    const afterScreen = screenPos(POD_GROUP);
-    expect(afterScreen.x).toBeCloseTo(beforeScreen.x, 1);
-    expect(afterScreen.y).toBeCloseTo(beforeScreen.y, 1);
+    // The counter-pan is animated now, over the same curve as the cards, so the
+    // card is stationary *throughout* rather than only at the end — but the
+    // assertion has to wait for the transition to land before reading it.
+    await waitFor(() => {
+      const afterScreen = screenPos(POD_GROUP);
+      expect(afterScreen.x).toBeCloseTo(beforeScreen.x, 1);
+      expect(afterScreen.y).toBeCloseTo(beforeScreen.y, 1);
+    });
+  });
+
+  // The reflow animation itself is CSS, which jsdom does not run — so what is
+  // testable is the switch that scopes it: the viewport may only glide while a
+  // counter-pan is in flight, or dragging the canvas would feel laggy.
+  it("turns the viewport transition on for a reflow and off again after", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderApp();
+      await expandPath(NS, DEP);
+      await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+      const canvas = () => document.querySelector(".relative.h-full.w-full")!;
+      // The expands above armed it too; let those settle first.
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+      expect(canvas().className).not.toContain("kscope-reflowing");
+
+      fireEvent.click(nodeEl(POD_GROUP)!);
+      expect(canvas().className).toContain("kscope-reflowing");
+
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+      expect(canvas().className).not.toContain("kscope-reflowing");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // THE regression this whole change exists to prevent. Under the old model,

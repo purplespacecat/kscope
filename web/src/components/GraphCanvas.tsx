@@ -68,6 +68,11 @@ const NODE_H = 56;
 const NODE_SEP = 44;
 const RANK_SEP = 88;
 
+// How long a reflow takes. Mirrored by the .react-flow__node transition in
+// index.css — the cards and the viewport must move over the same curve for the
+// anchored card to stay still.
+const REFLOW_MS = 220;
+
 // Dwell time before the hover tooltip (full untruncated name) appears.
 const HOVER_DELAY_MS = 1500;
 
@@ -428,6 +433,17 @@ export function GraphCanvas({
   // Clicking in the canvas keeps the clicked node under the cursor: the anchor
   // is recorded at click time and applied once the new layout is in hand.
   const [anchor, setAnchor] = useState<Anchor | null>(null);
+  // Turns the viewport's CSS transition on for the length of one reflow. The
+  // counter-pan is still applied in a single instant call — CSS is what makes
+  // it *arrive* over 220ms, on the same curve as the cards, so the anchored
+  // card is stationary throughout instead of jumping the delta and sliding
+  // back. Scoped to the reflow because a dragged pan must stay instant.
+  const [panning, setPanning] = useState(false);
+  useEffect(() => {
+    if (!panning) return;
+    const t = setTimeout(() => setPanning(false), REFLOW_MS + 60);
+    return () => clearTimeout(t);
+  }, [panning]);
   const absPos = useMemo(() => absolutePositions(flowNodes), [flowNodes]);
   const clearAnchor = useCallback(() => setAnchor(null), []);
 
@@ -498,7 +514,10 @@ export function GraphCanvas({
   };
 
   return (
-    <div ref={wrapRef} className="relative h-full w-full">
+    <div
+      ref={wrapRef}
+      className={`relative h-full w-full${panning ? " kscope-reflowing" : ""}`}
+    >
       {tip && (
         <div
           className="pointer-events-none absolute z-50 max-w-xs rounded-lg bg-slate-900 px-3 py-2 shadow-xl"
@@ -560,7 +579,10 @@ export function GraphCanvas({
           // indicator rather than a second control. Anywhere on the card does
           // the same thing, so there is nothing to aim at and nothing to learn.
           if (d.groupToggle) {
-            if (here) setAnchor({ id: d.groupToggle, pos: here });
+            if (here) {
+            setAnchor({ id: d.groupToggle, pos: here });
+            setPanning(true);
+          }
             onToggleGroup(d.groupToggle);
             return;
           }
@@ -572,7 +594,10 @@ export function GraphCanvas({
           // so no test pins it; it is here to keep meaningless ids out of
           // `expanded`, which prune and any future "collapse all" would inherit.
           if ((childCounts.get(d.raw.id) ?? 0) > 0) {
-            if (here) setAnchor({ id: d.raw.id, pos: here });
+            if (here) {
+              setAnchor({ id: d.raw.id, pos: here });
+              setPanning(true);
+            }
             onToggleExpand(d.raw.id);
           }
         }}
