@@ -72,6 +72,10 @@ const SVC = "core/service/web/web";
 const SA = "core/serviceaccount/web/api";
 const CM = "core/configmap/web/cfg";
 const KUST = "kustomize/kustomization/web/apps";
+// Three Secrets fold into one group card, so SEC_A is a resource the panel can
+// name but the canvas is not currently showing.
+const SEC_A = "core/secret/web/sec-a";
+const SECRET_GROUP = `__kg__${NS}__Secret`;
 
 // Colours the outlines must use, from lib/display's EDGE_STYLE. The DOM
 // normalises hex to rgb(), so compare in the form it will actually report.
@@ -100,6 +104,9 @@ const snapshot: Snapshot = {
     { id: SA, kind: "ServiceAccount", name: "api", parentId: NS, namespace: "web", health: "healthy" },
     { id: CM, kind: "ConfigMap", name: "cfg", parentId: NS, namespace: "web", health: "healthy" },
     { id: KUST, kind: "Kustomization", name: "apps", parentId: NS, namespace: "web", health: "healthy" },
+    { id: SEC_A, kind: "Secret", name: "sec-a", parentId: NS, namespace: "web", health: "healthy" },
+    { id: "core/secret/web/sec-b", kind: "Secret", name: "sec-b", parentId: NS, namespace: "web", health: "healthy" },
+    { id: "core/secret/web/sec-c", kind: "Secret", name: "sec-c", parentId: NS, namespace: "web", health: "healthy" },
   ],
   edges: [
     // Three different things the Deployment takes part in, in both directions…
@@ -108,6 +115,8 @@ const snapshot: Snapshot = {
     { id: "e3", source: SVC, target: DEP, kind: "selects" },
     // …and one that is a property of the card, not wiring between cards.
     { id: "e4", source: DEP, target: KUST, kind: "managed-by" },
+    // Reaches a Secret that is folded away behind a group card.
+    { id: "e5", source: DEP, target: SEC_A, kind: "mounts" },
   ],
   stats: { counts: {}, durationMs: 1 },
 };
@@ -251,5 +260,71 @@ describe("relationship legend", () => {
 
     expect(legend.textContent).not.toContain("managed by");
     expect(within(nodeEl(DEP)!).getByText("Kustomization")).toBeInTheDocument();
+  });
+});
+
+describe("related-resource list", () => {
+  const legend = async () =>
+    waitFor(() => {
+      const el = document.querySelector('[aria-label="Related to this"]');
+      if (!el) throw new Error("no legend yet");
+      return el as HTMLElement;
+    });
+  const expandPanel = async () => {
+    const el = await legend();
+    fireEvent.click(within(el).getByRole("button", { name: /show related resources/i }));
+  };
+
+  it("summarises until asked to list", async () => {
+    await renderFocused(DEP);
+    const el = await legend();
+
+    expect(el.textContent).toContain("reads");
+    expect(el.textContent).not.toContain("cfg"); // the resource name, not shown yet
+  });
+
+  it("names every related resource once expanded", async () => {
+    await renderFocused(DEP);
+    await expandPanel();
+
+    const el = await legend();
+    expect(el.textContent).toContain("cfg"); // ConfigMap it reads
+    expect(el.textContent).toContain("sec-a"); // Secret it mounts, folded away
+  });
+
+  it("brings a folded resource onto the canvas when its entry is clicked", async () => {
+    await renderFocused(DEP);
+    await expandPanel();
+    expect(nodeEl(SEC_A)).toBeNull(); // inside a collapsed group
+    expect(nodeEl(SECRET_GROUP)).toBeTruthy();
+
+    fireEvent.click(within(await legend()).getByRole("button", { name: /sec-a/i }));
+
+    await waitFor(() => expect(nodeEl(SEC_A)).toBeTruthy());
+  });
+
+  it("flags the card it took you to, so it can be found on a large canvas", async () => {
+    await renderFocused(DEP);
+    await expandPanel();
+
+    fireEvent.click(within(await legend()).getByRole("button", { name: /sec-a/i }));
+
+    // Distinct from both the selection ring and the relationship outline: this
+    // says "here, this one", not "this is what you are looking at".
+    await waitFor(() => expect(nodeEl(SEC_A)?.style.outline).toBeTruthy());
+  });
+
+  it("does not hand the selection to the resource it takes you to", async () => {
+    // Otherwise the panel instantly becomes about the thing just clicked, and
+    // the context being explored is gone.
+    await renderFocused(DEP);
+    await expandPanel();
+
+    fireEvent.click(within(await legend()).getByRole("button", { name: /sec-a/i }));
+    await waitFor(() => expect(nodeEl(SEC_A)).toBeTruthy());
+
+    expect(window.location.search).toContain(encodeURIComponent(DEP));
+    const el = await legend();
+    expect(el.textContent).toContain("reads"); // still the Deployment's relationships
   });
 });

@@ -49,6 +49,10 @@ export default function App() {
   const [solo, setSolo] = useState(false);
   // Bumped by reveals from outside the canvas, to ask it to re-frame.
   const [revealTick, setRevealTick] = useState(0);
+  const [spotlight, setSpotlight] = useState<{ id: string | null; tick: number }>({
+    id: null,
+    tick: 0,
+  });
 
   // Panel visibility. Session-only by design: a fresh launch starts with
   // everything visible. Collapsing the details panel keeps the selection —
@@ -130,6 +134,18 @@ export default function App() {
   const climb = () => setTree((cur) => showParent(nodes, cur));
   // Picking from the sidebar tree names a node that may not be on screen, so it
   // reveals: selection alone never changes what is visible.
+  // Taking the user to a related resource is a *reveal*, never a selection:
+  // selecting it would swap the relationship panel over to that resource and
+  // lose the context they were working through.
+  const goToRelated = (id: string) => {
+    setTree((cur) => reveal(nodes, cur, id, solo));
+    setRevealTick((t) => t + 1);
+    // Revealing can open several levels and re-frame the whole canvas, so say
+    // which card the click was about. The tick makes a repeat click on the same
+    // resource flag it again.
+    setSpotlight((cur) => ({ id, tick: cur.tick + 1 }));
+  };
+
   const selectAndReveal = (n: GraphNode | null) => {
     select(n);
     if (!n) return;
@@ -287,6 +303,8 @@ export default function App() {
               onToggleExpand={toggleNode}
               onToggleGroup={toggleGroupCard}
               onShowParent={climb}
+              onGoToRelated={goToRelated}
+              spotlight={spotlight}
               revealTick={revealTick}
               onSelect={select}
             />

@@ -357,6 +357,12 @@ export interface Relation {
   color: string;
   /** Visible cards to outline — group cards where a member is folded away. */
   cardIds: string[];
+  /**
+   * The actual resources on the other end, for the panel to list. Distinct from
+   * `cardIds`: the outline lands on whatever card stands in for a resource,
+   * but "2 ConfigMaps" is not something a reader can click.
+   */
+  items: { id: string; name: string; kind: string }[];
   /** How many underlying edges this line stands for. */
   count: number;
 }
@@ -410,12 +416,17 @@ export function relate(
         ),
         color: EDGE_STYLE[e.kind]?.stroke ?? "#64748b",
         cardIds: [],
+        items: [],
         count: 0,
       };
       out.set(key, rel);
     }
     rel.count++;
     if (!rel.cardIds.includes(card)) rel.cardIds.push(card);
+    const other = byId.get(otherId);
+    if (other && !rel.items.some((i) => i.id === other.id)) {
+      rel.items.push({ id: other.id, name: other.name, kind: other.kind });
+    }
   }
   return [...out.values()];
 }

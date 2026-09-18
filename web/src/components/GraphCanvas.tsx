@@ -50,6 +50,10 @@ interface Props {
   onToggleExpand: (id: string) => void;
   onToggleGroup: (gid: string) => void;
   onShowParent: () => void;
+  /** Bring a related resource onto the canvas without selecting it. */
+  onGoToRelated: (id: string) => void;
+  /** Card to flag briefly after a reveal; `tick` re-flags the same card. */
+  spotlight: { id: string | null; tick: number };
   /** Bumped when something outside the canvas revealed a node; re-frames. */
   revealTick: number;
   onSelect: (node: GraphNode | null) => void;
@@ -85,6 +89,7 @@ function layout(
   marks: Map<string, string>,
   expanded: Set<string>,
   selectedId: string | null,
+  flashId: string | null,
 ): Layout {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "TB", nodesep: NODE_SEP, ranksep: RANK_SEP });
@@ -114,6 +119,7 @@ function layout(
     const hex = HEALTH_HEX[health(n)];
     const isSelected = n.id === selectedId;
     const ring = outlines.get(n.id);
+    const flashing = n.id === flashId;
     const kids = childCounts.get(n.id) ?? 0;
     const isOpen = expanded.has(n.id);
     flowNodes.push({
@@ -179,6 +185,11 @@ function layout(
             ? `0 0 0 5px ${ring}33, 0 2px 8px ${ring}40`
             : `inset 3px 0 0 ${hex}`,
         background: ring ? `${ring}0f` : "#fff",
+        // Deliberately `outline`, not border or box-shadow: those are already
+        // carrying health, selection and relationship, and this has to read on
+        // top of any of them without displacing what they say.
+        outline: flashing ? "3px solid #f59e0b" : undefined,
+        outlineOffset: flashing ? "3px" : undefined,
         fontSize: 12,
       },
     });
@@ -382,12 +393,25 @@ export function GraphCanvas({
   onToggleExpand,
   onToggleGroup,
   onShowParent,
+  onGoToRelated,
+  spotlight,
   revealTick,
   onSelect,
 }: Props) {
+// The spotlight fades on its own: it answers "which one did I just click",
+  // which stops being a question a second or two later. Keyed on the tick so
+  // clicking the same resource twice flags it twice.
+  const [flashId, setFlashId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!spotlight.id) return;
+    setFlashId(spotlight.id);
+    const t = setTimeout(() => setFlashId(null), 1800);
+    return () => clearTimeout(t);
+  }, [spotlight.id, spotlight.tick]);
+
   const { flowNodes, flowEdges } = useMemo(
-    () => layout(visible, outlines, childCounts, marks, expanded, selectedId),
-    [visible, outlines, childCounts, marks, expanded, selectedId],
+    () => layout(visible, outlines, childCounts, marks, expanded, selectedId, flashId),
+    [visible, outlines, childCounts, marks, expanded, selectedId, flashId],
   );
 
   // Clicking in the canvas keeps the clicked node under the cursor: the anchor
@@ -402,6 +426,9 @@ export function GraphCanvas({
   // handoff, ?focus= URL), where there is no screen position to preserve and
   // fitting the new subgraph is the right answer.
   const [viewKey, setViewKey] = useState(0);
+
+  // Whether the relationship panel lists individual resources or just counts.
+  const [listOpen, setListOpen] = useState(false);
 
   // Hover-dwell tooltip: linger on a node for HOVER_DELAY_MS and the full
   // (untruncated) identity appears — no click needed.
@@ -561,33 +588,6 @@ export function GraphCanvas({
       >
         <Background />
         <Controls />
-        {relations.length > 0 && (
-          <Panel
-            position="top-right"
-            aria-label="Related to this"
-            className="max-w-xs rounded-md border border-slate-200 bg-white/95 px-3 py-2 shadow-sm"
-          >
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-              related to this
-            </div>
-            <ul className="space-y-1">
-              {relations.map((r) => (
-                <li key={`${r.kind}-${r.phrase}`} className="flex items-center gap-2 text-xs">
-                  <span
-                    aria-hidden
-                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
-                    style={{ background: r.color }}
-                  />
-                  <span className="text-slate-700">{r.phrase}</span>
-                  <span className="ml-auto text-slate-400">
-                    {r.cardIds.length}
-                    {r.count !== r.cardIds.length ? ` (${r.count})` : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </Panel>
-        )}
         <Panel position="top-left" className="flex items-center gap-2">
           {canShowParent && (
             <button
@@ -612,6 +612,66 @@ export function GraphCanvas({
             one branch at a time
           </label>
         </Panel>
+        {relations.length > 0 && (
+          <Panel
+            position="top-right"
+            aria-label="Related to this"
+            className="max-w-xs rounded-md border border-slate-200 bg-white/95 px-3 py-2 shadow-sm"
+          >
+            <div className="mb-1 flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                related to this
+              </span>
+              <button
+                type="button"
+                onClick={() => setListOpen((v) => !v)}
+                aria-label={listOpen ? "Hide related resources" : "Show related resources"}
+                className="ml-auto rounded px-1 text-[10px] text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                {listOpen ? "▾" : "▸"}
+              </button>
+            </div>
+            <ul className="space-y-1">
+              {relations.map((r) => (
+                <li key={`${r.kind}-${r.phrase}`}>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span
+                      aria-hidden
+                      className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                      style={{ background: r.color }}
+                    />
+                    <span className="text-slate-700">{r.phrase}</span>
+                    <span className="ml-auto text-slate-400">
+                      {r.cardIds.length}
+                      {r.count !== r.cardIds.length ? ` (${r.count})` : ""}
+                    </span>
+                  </div>
+                  {listOpen && (
+                    <ul className="ml-[18px] mt-0.5 space-y-0.5">
+                      {r.items.map((it) => (
+                        <li key={it.id}>
+                          <button
+                            type="button"
+                            onClick={() => onGoToRelated(it.id)}
+                            title={`${it.kind} ${it.name} — show it on the canvas`}
+                            className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[11px] text-slate-600 hover:bg-slate-100"
+                          >
+                            <span
+                              className={`shrink-0 rounded px-1 text-[9px] font-semibold ${kindChipClass(it.kind)}`}
+                            >
+                              {kindAbbrev(it.kind)}
+                            </span>
+                            <span className="truncate">{it.name}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
         <RecenterButton />
         <AnchorKeeper anchor={anchor} absPos={absPos} onApplied={clearAnchor} />
         {flowNodes.length > 15 && <MiniMap pannable zoomable />}

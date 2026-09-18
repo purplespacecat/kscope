@@ -368,6 +368,32 @@ describe("relate", () => {
     expect(r.map((x) => x.kind)).toEqual(["mounts"]);
   });
 
+  it("names the individual resources behind the outline", () => {
+    // The outline lands on the group card, but the panel has to list what is
+    // actually in there — "2 ConfigMaps" is not something you can click.
+    const v = visibleTree(NODES, open);
+    const r = relate(
+      NODES,
+      [e("e1", "p/web-1-a", "cm/a"), e("e2", "p/web-1-a", "cm/b")],
+      v,
+      "p/web-1-a",
+    );
+    expect(r[0].cardIds).toEqual(["__kg__ns/app__ConfigMap"]);
+    expect(r[0].items.map((i) => i.name)).toEqual(["a", "b"]);
+    expect(r[0].items[0]).toMatchObject({ id: "cm/a", kind: "ConfigMap" });
+  });
+
+  it("lists a resource once however many edges reach it", () => {
+    const v = visibleTree(NODES, open);
+    const r = relate(
+      NODES,
+      [e("e1", "p/web-1-a", "cm/a"), e("e2", "p/web-1-a", "cm/a", "mounts")],
+      v,
+      "p/web-1-a",
+    );
+    expect(r[0].items).toHaveLength(1);
+  });
+
   it("gives each kind a colour so the outline means something", () => {
     const v = visibleTree(NODES, shallow);
     const r = relate(NODES, [e("e1", "d/web", "svc/web", "selects")], v, "d/web");
