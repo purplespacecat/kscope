@@ -209,6 +209,72 @@ describe("expansion is the user's", () => {
     expect(nodeEl(NS2)).toBeTruthy(); // sibling branch not pruned
   });
 
+  // One rule everywhere: clicking a card opens it, clicking its arrow closes it.
+  // Before this, a group card opened on a body click while a resource card only
+  // responded to its arrow — so clicking a Deployment looked like it did nothing.
+  it("opens a node's children when the card itself is clicked", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    expect(nodeEl(DEP)).toBeNull();
+
+    fireEvent.click(nodeEl(NS)!); // the card body, not the arrow
+
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+  });
+
+  it("selects the resource it opened, so one click answers both questions", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+
+    fireEvent.click(nodeEl(NS)!);
+
+    await waitFor(() => expect(screen.queryByText(NOTHING_SELECTED)).toBeNull());
+    expect(nodeEl(DEP)).toBeTruthy();
+  });
+
+  it("does not close an open card when its body is clicked again", async () => {
+    // Clicking to read the details panel must never cost you the branch.
+    renderApp();
+    await expandPath(NS);
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+
+    fireEvent.click(nodeEl(NS)!);
+    fireEvent.click(nodeEl(NS)!);
+
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+  });
+
+  it("closes from the arrow, and leaves the selection where it was", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    fireEvent.click(nodeEl(DEP ? NS : NS)!); // open + select the namespace
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+    const selected = screen.queryByText(NOTHING_SELECTED);
+    expect(selected).toBeNull();
+
+    fireEvent.click(toggleEl(NS)!);
+
+    await waitFor(() => expect(nodeEl(DEP)).toBeNull());
+    // The arrow is structure only: it must not reach the details panel.
+    expect(screen.queryByText(NOTHING_SELECTED)).toBeNull();
+  });
+
+  it("opens a group card from its body and closes it from its arrow", async () => {
+    renderApp();
+    await expandPath(NS, DEP);
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+
+    fireEvent.click(nodeEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
+
+    // Body click again must not close it — same rule as a resource card.
+    fireEvent.click(nodeEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
+
+    fireEvent.click(toggleEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(pods[0])).toBeNull());
+  });
+
   it("expands and collapses from the card, which stays put throughout", async () => {
     renderApp();
     await expandPath(NS, DEP);
@@ -220,7 +286,8 @@ describe("expansion is the user's", () => {
 
     // The card is the same node in both states — it never leaves the layout — so
     // the round trip is driven from it rather than from a replacement header.
-    fireEvent.click(nodeEl(POD_GROUP)!);
+    // Closing goes through the arrow: a body click only ever opens.
+    fireEvent.click(toggleEl(POD_GROUP)!);
     await waitFor(() => expect(nodeEl(pods[0])).toBeNull());
     expect(nodeEl(POD_GROUP)).toBeTruthy();
   });

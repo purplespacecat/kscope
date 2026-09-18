@@ -197,12 +197,18 @@ function layout(
                 {gr.expanded ? "click to collapse" : "click to expand"}
               </span>
             </span>
-            <span className="shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600">
+            <button
+              type="button"
+              data-toggle={gr.id}
+              aria-label={`${gr.expanded ? "Collapse" : "Expand"} ${kindPlural(gr.kind)}`}
+              className="nodrag shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600 hover:bg-slate-300"
+            >
               {gr.expanded ? "▾" : "▸"} {gr.memberIds.length}
-            </span>
+            </button>
           </div>
         ),
         groupToggle: gr.id,
+        groupExpanded: gr.expanded,
       },
       style: {
         width: NODE_W,
@@ -600,28 +606,42 @@ export function GraphCanvas({
           // Dismiss on click even when nothing moves — the layout may still
           // shift under the tooltip.
           clearTip();
-          const d = n.data as { raw?: GraphNode; groupToggle?: string };
+          const d = n.data as {
+            raw?: GraphNode;
+            groupToggle?: string;
+            groupExpanded?: boolean;
+          };
           // Where the clicked card is right now — the position to hold across
-          // the reflow so expanding never teleports the thing you clicked.
+          // the reflow so opening never teleports the thing you clicked.
           const here = absPos.get(n.id) ?? null;
+          // One rule for every card: the body OPENS it, the arrow toggles it.
+          // Opening on a body click is what makes clicking a Deployment do
+          // something; never closing on one is what stops a click meant for the
+          // details panel costing you the branch you just opened.
+          const hitArrow = !!(event.target as HTMLElement | null)?.closest?.(
+            "[data-toggle]",
+          );
+
           if (d.groupToggle) {
+            if (!hitArrow && d.groupExpanded) return; // already open: nothing to do
             if (here) setAnchor({ id: d.groupToggle, pos: here });
             onToggleGroup(d.groupToggle);
             return;
           }
           if (!d.raw) return;
-          // One card, two targets: the ▸/▾ badge is structure, everywhere else
-          // is details. Keeping them apart is what lets selection stop
-          // reshaping the tree.
-          const hitToggle = (event.target as HTMLElement | null)?.closest?.(
-            "[data-toggle]",
-          );
-          if (hitToggle) {
+
+          if (hitArrow) {
+            // Structure only — the arrow must not reach the details panel.
             if (here) setAnchor({ id: d.raw.id, pos: here });
             onToggleExpand(d.raw.id);
             return;
           }
           onSelect(d.raw);
+          const hasKids = (childCounts.get(d.raw.id) ?? 0) > 0;
+          if (hasKids && !expanded.has(d.raw.id)) {
+            if (here) setAnchor({ id: d.raw.id, pos: here });
+            onToggleExpand(d.raw.id);
+          }
         }}
         onNodeMouseEnter={(e, n) => {
           const raw = (n.data as { raw?: GraphNode }).raw;
