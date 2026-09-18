@@ -645,13 +645,18 @@ export function GraphCanvas({
             <ul className="space-y-1">
               {relations.map((r) => (
                 <li key={`${r.kind}-${r.phrase}`}>
-                  <div className="flex items-center gap-2 text-xs">
+                  <div
+                    className="flex items-center gap-2 text-xs"
+                    title={r.meaning}
+                  >
                     <span
                       aria-hidden
                       className="h-2.5 w-2.5 shrink-0 rounded-sm"
                       style={{ background: r.color }}
                     />
-                    <span className="text-slate-700">{r.phrase}</span>
+                    <span className="cursor-help text-slate-700 underline decoration-slate-300 decoration-dotted underline-offset-2">
+                      {r.phrase}
+                    </span>
                     <span className="ml-auto text-slate-400">
                       {r.cardIds.length}
                       {r.count !== r.cardIds.length ? ` (${r.count})` : ""}

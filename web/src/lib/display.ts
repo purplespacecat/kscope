@@ -327,6 +327,47 @@ export function edgePhrase(
   return direction === "out" ? kind : `${kind} \u2190`;
 }
 
+/**
+ * What a relationship actually means, for a tooltip. The phrase says what it
+ * is; this says how kscope knows, which is the part that tells a reader whether
+ * to trust it. Written direction-neutrally so one sentence reads correctly from
+ * either end of the edge.
+ */
+const MEANING: Record<string, string> = {
+  mounts:
+    "A volume in the pod spec points at this ConfigMap, Secret or PersistentVolumeClaim, so it is mounted into the container's filesystem.",
+  references:
+    "The pod reads values from this ConfigMap or Secret through env, envFrom or an image pull secret — passed in, not mounted as a file.",
+  uses: "The pod runs under this ServiceAccount, so that is the identity it presents to the API server.",
+  selects:
+    "A label selector currently matches — computed against the pod's actual labels at discovery time, not a reference anyone wrote down.",
+  exposes:
+    "An Ingress rule names this Service as a backend, so requests arriving on that host or path are routed to it.",
+  binds:
+    "The storage chain behind a claim: PersistentVolumeClaim to PersistentVolume to StorageClass.",
+  "scheduled-on": "The pod was running on this cluster Node when the snapshot was taken.",
+  "depends-on":
+    "Part of the infrastructure spine — the control plane components a cluster needs to function.",
+  "managed-by": "A GitOps controller owns this resource; editing it directly will be reverted.",
+  "sourced-from": "The manifests for this Flux object are pulled from this repository.",
+  "instance-of": "A custom resource and the CustomResourceDefinition that declares its kind.",
+};
+
+/** Overrides where the source's Kind changes what the relationship means. */
+const MEANING_BY_SOURCE: Record<string, Record<string, string>> = {
+  selects: {
+    Service:
+      "This Service's label selector currently matches the pod's labels, so traffic sent to the Service can land on it. Computed from the pod's actual labels, not a stored reference — which is why it catches label drift.",
+    NetworkPolicy:
+      "This NetworkPolicy's podSelector currently matches the pod's labels, so the policy governs that pod's traffic. Note an empty podSelector matches every pod in the namespace.",
+  },
+};
+
+/** One sentence explaining an edge kind, or undefined if there is nothing to add. */
+export function edgeMeaning(kind: string, sourceKind?: string): string | undefined {
+  return (sourceKind ? MEANING_BY_SOURCE[kind]?.[sourceKind] : undefined) ?? MEANING[kind];
+}
+
 /** Label for an edge read from the target's side. */
 export function incomingEdgeLabel(kind: string): string {
   return edgePhrase(kind, "in");

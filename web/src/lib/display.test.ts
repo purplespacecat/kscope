@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   gitopsManagerId,
   health,
+  edgeMeaning,
   edgePhrase,
   incomingEdgeLabel,
   kindDocsUrl,
@@ -103,5 +104,25 @@ describe("edgePhrase", () => {
   it("falls back to the raw kind for an edge it has no words for", () => {
     expect(edgePhrase("frobnicates", "out")).toBe("frobnicates");
     expect(edgePhrase("frobnicates", "in")).toBe("frobnicates ←");
+  });
+});
+
+describe("edgeMeaning", () => {
+  it("explains how the relationship was actually inferred", () => {
+    // The point is to say something the phrase itself does not.
+    expect(edgeMeaning("selects", "Service")).toMatch(/label/i);
+    expect(edgeMeaning("references", undefined)).toMatch(/env/i);
+    expect(edgeMeaning("mounts", undefined)).toMatch(/volume/i);
+  });
+
+  it("distinguishes the two things a label-selector match can mean", () => {
+    const svc = edgeMeaning("selects", "Service");
+    const np = edgeMeaning("selects", "NetworkPolicy");
+    expect(svc).not.toBe(np);
+    expect(np).toMatch(/polic/i);
+  });
+
+  it("says nothing rather than something empty for a kind it has no words for", () => {
+    expect(edgeMeaning("frobnicates", undefined)).toBeUndefined();
   });
 });

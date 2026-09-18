@@ -245,6 +245,21 @@ describe("relationship legend", () => {
     expect(legend.textContent).not.toContain("selects");
   });
 
+  it("explains what each relationship means on hover", async () => {
+    await renderFocused(DEP);
+    const el = await waitFor(() => {
+      const found = document.querySelector('[aria-label="Related to this"]');
+      if (!found) throw new Error("no legend yet");
+      return found as HTMLElement;
+    });
+
+    const row = within(el).getByText("routed to by").closest("[title]") as HTMLElement;
+    // The Service reading of a label-selector match, not the generic one — the
+    // phrase alone never says how kscope knows this.
+    expect(row.title).toMatch(/label selector/i);
+    expect(row.title).toMatch(/traffic/i);
+  });
+
   it("stays away when nothing is selected", async () => {
     await renderFocused();
     expect(document.querySelector('[aria-label="Related to this"]')).toBeNull();

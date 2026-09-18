@@ -1,5 +1,5 @@
 import type { GraphEdge, GraphNode } from "../types/graph";
-import { EDGE_STYLE, edgePhrase, INFRA_KINDS } from "./display";
+import { EDGE_STYLE, edgeMeaning, edgePhrase, INFRA_KINDS } from "./display";
 
 /** A parent's leaf children of one kind fold once there are at least this many. */
 const GROUP_AT = 3;
@@ -353,6 +353,8 @@ export interface Relation {
   kind: string;
   /** Plain English, from the selection's point of view. */
   phrase: string;
+  /** One sentence on how the relationship was inferred, for a tooltip. */
+  meaning?: string;
   /** Outline colour for the cards on the other end. */
   color: string;
   /** Visible cards to outline — group cards where a member is folded away. */
@@ -414,6 +416,7 @@ export function relate(
           outgoing ? "out" : "in",
           byId.get(e.source)?.kind,
         ),
+        meaning: edgeMeaning(e.kind, byId.get(e.source)?.kind),
         color: EDGE_STYLE[e.kind]?.stroke ?? "#64748b",
         cardIds: [],
         items: [],
