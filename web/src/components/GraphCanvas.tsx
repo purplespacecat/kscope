@@ -1,25 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
-  BaseEdge,
   Controls,
-  EdgeLabelRenderer,
   MiniMap,
   Panel,
   ReactFlow,
-  getSmoothStepPath,
   useOnViewportChange,
   useReactFlow,
   type Edge as FlowEdge,
-  type EdgeProps,
   type Node as FlowNode,
   type Viewport,
 } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
 import { DESKTOP_EVENTS, onDesktopEvent } from "../lib/desktop";
-import type { GraphEdge, GraphNode } from "../types/graph";
+import type { GraphNode } from "../types/graph";
 import {
-  EDGE_STYLE,
   HEALTH_DOT,
   HEALTH_HEX,
   HEALTH_LABEL,
@@ -28,38 +23,55 @@ import {
   kindAbbrev,
   kindChipClass,
   kindPlural,
-  kindRank,
 } from "../lib/display";
 import { absolutePositions, anchoredViewport, type Point } from "../lib/viewport";
+import type { Relation, Visible } from "../lib/tree";
 
 interface Props {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  /** nodeId → direct children hidden by the focus budget ("+N" chip). */
-  hiddenCounts?: Map<string, number>;
+  /** Exactly what is on screen, from lib/tree.ts. */
+  visible: Visible;
+  /** What the selected card is related to, for the legend. */
+  relations: Relation[];
+  /** Card id → outline colour for a related card. */
+  outlines: Map<string, string>;
+  /** Nodes whose children are shown — drives the ▸/▾ glyph. */
+  expanded: Set<string>;
+  /** id → number of containment children, for the toggle badge. */
+  childCounts: Map<string, number>;
+  /** id → Kind of whatever manages it, shown as a mark instead of an arrow. */
+  marks: Map<string, string>;
+  /** Whether the visible root has a parent to climb to. */
+  canShowParent: boolean;
+  /** Name of the parent, for the climb control's label. */
+  parentLabel?: string;
   selectedId: string | null;
+  solo: boolean;
+  onToggleSolo: () => void;
+  onToggleExpand: (id: string) => void;
+  onToggleGroup: (gid: string) => void;
+  onShowParent: () => void;
+  /** Bring a related resource onto the canvas without selecting it. */
+  onGoToRelated: (id: string) => void;
+  /** Card to flag briefly after a reveal; `tick` re-flags the same card. */
+  spotlight: { id: string | null; tick: number };
+  /** Bumped when something outside the canvas revealed a node; re-frames. */
+  revealTick: number;
   onSelect: (node: GraphNode | null) => void;
 }
 
 const NODE_W = 200;
 const NODE_H = 56;
 
-// Grid geometry for grouped/wrapped children.
-const WRAP_AT = 6;
-const GRID_GAP_X = 16;
-const GRID_GAP_Y = 24;
-const GRID_PAD = 16;
+// Org-chart spacing. Generous on purpose: the old 30/50 was tuned to cram a
+// 40-node budget onto one screen, and that budget is gone — expansion is the
+// user's now, so the canvas may be as large as what they opened.
+const NODE_SEP = 44;
+const RANK_SEP = 88;
 
-// A parent's leaf children of the same kind fold into an expandable
-// kind-group once there are at least this many of them.
-const GROUP_AT = 3;
-
-// Namespaces are the primary drill path — never hide them behind a group.
-const GROUP_EXEMPT = new Set(["Namespace"]);
-
-// Suffix of an expanded group's members box. The group *card* keeps the bare id
-// in both states, so a toggle never changes what the anchor is holding.
-const MEMBER_BOX_SUFFIX = "__m";
+// How long a reflow takes. Mirrored by the .react-flow__node transition in
+// index.css — the cards and the viewport must move over the same curve for the
+// anchored card to stay still.
+const REFLOW_MS = 220;
 
 // Dwell time before the hover tooltip (full untruncated name) appears.
 const HOVER_DELAY_MS = 1500;
@@ -69,269 +81,55 @@ interface Layout {
   flowEdges: FlowEdge[];
 }
 
-function gridSize(items: number): { w: number; h: number } {
-  const cols = Math.min(WRAP_AT, items);
-  const rows = Math.ceil(items / WRAP_AT);
-  return {
-    w: cols * NODE_W + (cols - 1) * GRID_GAP_X + 2 * GRID_PAD,
-    h: rows * NODE_H + (rows - 1) * GRID_GAP_Y + 2 * GRID_PAD,
-  };
-}
-
-function gridSlot(i: number, total: number, boxW: number): { x: number; y: number } {
-  const row = Math.floor(i / WRAP_AT);
-  const col = i % WRAP_AT;
-  const inRow = Math.min(WRAP_AT, total - row * WRAP_AT);
-  const rowLeft =
-    GRID_PAD + (boxW - 2 * GRID_PAD - (inRow * NODE_W + (inRow - 1) * GRID_GAP_X)) / 2;
-  return {
-    x: rowLeft + col * (NODE_W + GRID_GAP_X),
-    y: GRID_PAD + row * (NODE_H + GRID_GAP_Y),
-  };
-}
-
-// Layered "iceberg" layout with kind-grouping:
-//   - infra (control-plane, machines) ranks ABOVE the cluster node, content
-//     below;
-//   - a parent's leaf children fold by kind into expandable groups; the card
-//     keeps its slot either way, and expanding adds a members-only box ranked
-//     *below* it rather than a sibling box beside it;
-//   - leftover ungrouped leaves beyond WRAP_AT wrap into a plain grid;
-//   - relationship edges to packed members are dimmed, and hidden entirely
-//     while their group is collapsed.
+// Top-down org chart over exactly what `visibleTree` says is on screen.
+//
+// There is no second opinion about visibility here: this function lays out the
+// nodes and group cards it is handed and draws the edges it is handed. Anything
+// that decides what to show lives in lib/tree.ts, so one set of state governs
+// the picture.
 function layout(
-  nodes: GraphNode[],
-  edges: GraphEdge[],
-  hiddenCounts: Map<string, number> | undefined,
+  visible: Visible,
+  outlines: Map<string, string>,
+  childCounts: Map<string, number>,
+  marks: Map<string, string>,
+  expanded: Set<string>,
   selectedId: string | null,
-  expandedGroups: Set<string>,
+  flashId: string | null,
 ): Layout {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "TB", nodesep: 30, ranksep: 50 });
+  g.setGraph({ rankdir: "TB", nodesep: NODE_SEP, ranksep: RANK_SEP });
   g.setDefaultEdgeLabel(() => ({}));
 
-  const contains = edges.filter((e) => e.kind === "contains");
-  const overlay = edges.filter((e) => e.kind !== "contains");
-
-  // Semantic containment (source is always the parent, as App builds them).
-  const childIds = new Map<string, string[]>();
-  const hasChildren = new Set<string>();
-  for (const e of contains) {
-    hasChildren.add(e.source);
-    const list = childIds.get(e.source);
-    if (list) list.push(e.target);
-    else childIds.set(e.source, [e.target]);
+  for (const n of visible.nodes) g.setNode(n.id, { width: NODE_W, height: NODE_H });
+  for (const gr of visible.groups) g.setNode(gr.id, { width: NODE_W, height: NODE_H });
+  for (const e of visible.containment) {
+    // Infra containment ranks child→parent so the control-plane hangs above the
+    // cluster node rather than looping around it.
+    const child = visible.nodes.find((n) => n.id === e.target);
+    const flip = child && INFRA_KINDS.has(child.kind);
+    g.setEdge(flip ? e.target : e.source, flip ? e.source : e.target);
   }
-
-  const byKindThenName = (a: string, b: string) => {
-    const na = byId.get(a)!;
-    const nb = byId.get(b)!;
-    return kindRank(na.kind) - kindRank(nb.kind) || na.name.localeCompare(nb.name);
-  };
-
-  type Slot =
-    | { t: "n"; id: string }
-    | { t: "g"; gid: string; kind: string; count: number; expanded: boolean };
-  interface Container {
-    id: string;
-    /** Node the rendered edge hangs off — not necessarily the dagre parent. */
-    edgeFrom: string;
-    members: Slot[];
-    /** Group id this box belongs to; makes the box's background a collapse target. */
-    toggle?: string;
-    w: number;
-    h: number;
-  }
-  const containers: Container[] = [];
-  const groupCards: {
-    id: string;
-    parent: string;
-    kind: string;
-    count: number;
-    expanded: boolean;
-  }[] = [];
-  const memberOf = new Map<string, string>(); // member id → container id
-  const hiddenMembers = new Set<string>(); // members of collapsed groups
-  const packed = new Set<string>(); // nodes not laid out by dagre directly
-
-  for (const [parent, kids] of childIds) {
-    const leaves = kids.filter((k) => {
-      const n = byId.get(k);
-      return n && !hasChildren.has(k) && !INFRA_KINDS.has(n.kind);
-    });
-    if (leaves.length === 0) continue;
-
-    const buckets = new Map<string, string[]>();
-    for (const l of leaves) {
-      const kind = byId.get(l)!.kind;
-      const list = buckets.get(kind);
-      if (list) list.push(l);
-      else buckets.set(kind, [l]);
-    }
-
-    const singles: string[] = [];
-    const groupsHere: {
-      gid: string;
-      kind: string;
-      count: number;
-      expanded: boolean;
-    }[] = [];
-    // Members of expanded groups, to be boxed once we know what stands in for
-    // their card in the dagre graph (see below).
-    const boxesHere: { gid: string; members: string[] }[] = [];
-    for (const [kind, members] of buckets) {
-      if (members.length < GROUP_AT || GROUP_EXEMPT.has(kind)) {
-        singles.push(...members);
-        continue;
-      }
-      members.sort(byKindThenName);
-      const gid = `__kg__${parent}__${kind}`;
-      for (const m of members) packed.add(m);
-      const expanded = expandedGroups.has(gid);
-      // The card keeps its slot in both states — expanding must not move what is
-      // already on screen — so it stays in `mixed` either way.
-      groupsHere.push({ gid, kind, count: members.length, expanded });
-      if (expanded) boxesHere.push({ gid, members });
-      else for (const m of members) hiddenMembers.add(m);
-    }
-
-    // Group cards and singleton leaves share one mixed grid — a wide row of
-    // cards is the very thing being fixed.
-    const mixed: Slot[] = [
-      ...groupsHere.map(
-        (c) =>
-          ({
-            t: "g",
-            gid: c.gid,
-            kind: c.kind,
-            count: c.count,
-            expanded: c.expanded,
-          }) as Slot,
-      ),
-      ...singles.map((id) => ({ t: "n", id }) as Slot),
-    ];
-    const slotKey = (s: Slot) =>
-      s.t === "n"
-        ? { kind: byId.get(s.id)!.kind, name: byId.get(s.id)!.name }
-        : { kind: s.kind, name: kindPlural(s.kind) };
-    mixed.sort((a, b) => {
-      const ka = slotKey(a);
-      const kb = slotKey(b);
-      return kindRank(ka.kind) - kindRank(kb.kind) || ka.name.localeCompare(kb.name);
-    });
-
-    // Whichever dagre node stands in for a group card: the grid that packs it, or
-    // the card itself when the children didn't need a grid. Members boxes hang
-    // below this, which is what keeps them out of the card's own rank.
-    let cardStandIn: (gid: string) => string;
-
-    if (mixed.length > WRAP_AT) {
-      const gridId = `__grid__${parent}`;
-      const { w, h } = gridSize(mixed.length);
-      containers.push({ id: gridId, edgeFrom: parent, members: mixed, w, h });
-      for (const s of mixed) {
-        if (s.t === "n") {
-          packed.add(s.id);
-          memberOf.set(s.id, gridId);
-        } else {
-          packed.add(s.gid);
-        }
-      }
-      g.setNode(gridId, { width: w, height: h });
-      g.setEdge(parent, gridId);
-      cardStandIn = () => gridId;
-    } else {
-      for (const s of mixed) {
-        if (s.t === "g") {
-          groupCards.push({
-            id: s.gid,
-            parent,
-            kind: s.kind,
-            count: s.count,
-            expanded: s.expanded,
-          });
-          g.setNode(s.gid, { width: NODE_W, height: NODE_H });
-          g.setEdge(parent, s.gid);
-        }
-        // plain singles stay ordinary dagre children (not packed)
-      }
-      cardStandIn = (gid) => gid;
-    }
-
-    // An expanded group's members go in their own box, ranked *below* the card
-    // rather than beside it. Ranking it as a sibling of the grid — which is what
-    // this used to do — put a ~1300px box next to the grid and shoved everything
-    // sideways off both viewport edges.
-    for (const box of boxesHere) {
-      const boxId = `${box.gid}${MEMBER_BOX_SUFFIX}`;
-      const { w, h } = gridSize(box.members.length);
-      containers.push({
-        id: boxId,
-        // Drawn hanging off its card, though dagre ranked it under whatever packs
-        // that card — the same split infra containment already uses.
-        edgeFrom: box.gid,
-        members: box.members.map((id) => ({ t: "n", id }) as Slot),
-        toggle: box.gid,
-        w,
-        h,
-      });
-      for (const m of box.members) memberOf.set(m, boxId);
-      g.setNode(boxId, { width: w, height: h });
-      g.setEdge(cardStandIn(box.gid), boxId);
-    }
-  }
-
-  for (const n of nodes) {
-    if (!packed.has(n.id)) g.setNode(n.id, { width: NODE_W, height: NODE_H });
-  }
-
-  // Containment drives the layout; infra edges are flipped so those subtrees
-  // grow upward from the cluster.
-  for (const e of contains) {
-    if (packed.has(e.target)) continue; // grouped/gridded: via container edge
-    const child = byId.get(e.target);
-    if (child && INFRA_KINDS.has(child.kind)) g.setEdge(e.target, e.source);
-    else g.setEdge(e.source, e.target);
-  }
-
-  // Relationship edges don't warp ranks — except to anchor nodes pulled in
-  // purely via a relationship (they have no containment edge in view).
-  const anchored = new Set<string>();
-  for (const e of contains) {
-    anchored.add(e.source);
-    anchored.add(e.target);
-  }
-  for (const e of overlay) {
-    if (packed.has(e.source) || packed.has(e.target)) continue;
-    if (!anchored.has(e.source) || !anchored.has(e.target)) {
-      g.setEdge(e.source, e.target);
-    }
-  }
-
   dagre.layout(g);
 
-  const pos = new Map<string, { x: number; y: number }>();
-  for (const n of nodes) {
-    if (packed.has(n.id)) continue;
-    const p = g.node(n.id);
-    if (p) pos.set(n.id, { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 });
-  }
+  const at = (id: string) => {
+    const p = g.node(id);
+    return p ? { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 } : null;
+  };
 
   const flowNodes: FlowNode[] = [];
 
-  const nodeCard = (
-    n: GraphNode,
-    p: { x: number; y: number },
-    container?: string,
-  ): FlowNode => {
+  for (const n of visible.nodes) {
+    const p = at(n.id);
+    if (!p) continue;
     const hex = HEALTH_HEX[health(n)];
     const isSelected = n.id === selectedId;
-    const hiddenKids = hiddenCounts?.get(n.id) ?? 0;
-    return {
+    const ring = outlines.get(n.id);
+    const flashing = n.id === flashId;
+    const kids = childCounts.get(n.id) ?? 0;
+    const isOpen = expanded.has(n.id);
+    flowNodes.push({
       id: n.id,
       position: p,
-      ...(container ? { parentId: container, extent: "parent" as const } : {}),
       data: {
         label: (
           <div className="flex w-full items-center gap-2 text-left">
@@ -346,20 +144,26 @@ function layout(
               </span>
               <span className="block text-[10px] text-slate-400">{n.kind}</span>
             </span>
-            {n.gitops && (
+            {(n.gitops || marks.has(n.id)) && (
               <span
-                title={`Managed by Flux ${n.gitops.kind} ${n.gitops.namespace}/${n.gitops.name}`}
+                title={
+                  n.gitops
+                    ? `Managed by Flux ${n.gitops.kind} ${n.gitops.namespace}/${n.gitops.name}`
+                    : `Managed by ${marks.get(n.id)}`
+                }
                 className="shrink-0 rounded bg-fuchsia-50 px-1 text-[9px] font-semibold text-fuchsia-600"
               >
-                flux
+                {n.gitops ? "flux" : marks.get(n.id)}
               </span>
             )}
-            {hiddenKids > 0 && (
+            {kids > 0 && (
               <span
-                title={`${hiddenKids} more inside — click to focus`}
+                data-toggle={n.id}
+                aria-label={`${isOpen ? "Collapse" : "Expand"} ${n.name}`}
+                title={isOpen ? `${kids} inside — click to collapse` : `${kids} inside — click to expand`}
                 className="shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600"
               >
-                +{hiddenKids}
+                {isOpen ? "▾" : "▸"} {kids}
               </span>
             )}
           </div>
@@ -370,247 +174,92 @@ function layout(
         width: NODE_W,
         padding: 8,
         borderRadius: 8,
+        // Selection is blue; a card related to it is ringed in the colour its
+        // relationship carries in the legend, which is the whole indicator now.
+        // It has to carry across a wide canvas without being hunted for, so the
+        // ring is thick, haloed and backed by a wash of the same colour — a
+        // 1px tint beside a 1px grey reads as noise rather than as an answer.
         border: isSelected
           ? "2px solid #3b82f6"
-          : `1px ${n.synthetic ? "dashed" : "solid"} #cbd5e1`,
+          : ring
+            ? `3px solid ${ring}`
+            : `1px ${n.synthetic ? "dashed" : "solid"} #cbd5e1`,
         boxShadow: isSelected
           ? "0 0 0 3px rgba(59,130,246,0.25)"
-          : `inset 3px 0 0 ${hex}`,
-        background: "#fff",
+          : ring
+            ? `0 0 0 5px ${ring}33, 0 2px 8px ${ring}40`
+            : `inset 3px 0 0 ${hex}`,
+        background: ring ? `${ring}0f` : "#fff",
+        // Deliberately `outline`, not border or box-shadow: those are already
+        // carrying health, selection and relationship, and this has to read on
+        // top of any of them without displacing what they say.
+        outline: flashing ? "3px solid #f59e0b" : undefined,
+        outlineOffset: flashing ? "3px" : undefined,
         fontSize: 12,
       },
-    };
-  };
+    });
+  }
 
-  const groupHeaderCard = (
-    id: string,
-    kind: string,
-    count: number,
-    expanded: boolean,
-    p: { x: number; y: number },
-    container?: string,
-  ): FlowNode => ({
-    id,
-    position: p,
-    ...(container ? { parentId: container, extent: "parent" as const } : {}),
-    data: {
-      label: (
-        <div className="flex w-full items-center gap-2 text-left">
-          <span
-            className={`shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold ${kindChipClass(kind)}`}
-          >
-            {kindAbbrev(kind)}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-xs font-medium text-slate-900">
-              {kindPlural(kind)}
-            </span>
-            <span className="block text-[10px] text-slate-400">
-              {expanded ? "click to collapse" : "click to expand"}
-            </span>
-          </span>
-          <span className="shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600">
-            {count}
-          </span>
-          <span className="shrink-0 text-[10px] text-slate-400">
-            {expanded ? "▾" : "▸"}
-          </span>
-        </div>
-      ),
-      groupToggle: id,
-    },
-    style: {
-      width: NODE_W,
-      padding: 8,
-      borderRadius: 8,
-      border: "1px dashed #94a3b8",
-      background: "#f8fafc",
-      fontSize: 12,
-    },
-  });
-
-  // Members boxes for expanded kind-groups, residual grids, and their members.
-  for (const c of containers) {
-    const ph = g.node(c.id);
-    if (!ph) continue;
+  for (const gr of visible.groups) {
+    const p = at(gr.id);
+    if (!p) continue;
+    const ring = outlines.get(gr.id);
     flowNodes.push({
-      id: c.id,
-      position: { x: ph.x - c.w / 2, y: ph.y - c.h / 2 },
-      data: c.toggle ? { groupToggle: c.toggle } : { label: null },
+      id: gr.id,
+      position: p,
+      data: {
+        label: (
+          <div className="flex w-full items-center gap-2 text-left">
+            <span
+              className={`shrink-0 rounded px-1 py-0.5 text-[10px] font-semibold ${kindChipClass(gr.kind)}`}
+            >
+              {kindAbbrev(gr.kind)}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium text-slate-900">
+                {kindPlural(gr.kind)}
+              </span>
+              <span className="block text-[10px] text-slate-400">
+                {gr.expanded ? "click to collapse" : "click to expand"}
+              </span>
+            </span>
+            <span
+              data-toggle={gr.id}
+              aria-label={`${gr.expanded ? "Collapse" : "Expand"} ${kindPlural(gr.kind)}`}
+              className="shrink-0 rounded-full bg-slate-200 px-1.5 text-[10px] font-medium text-slate-600"
+            >
+              {gr.expanded ? "▾" : "▸"} {gr.memberIds.length}
+            </span>
+          </div>
+        ),
+        groupToggle: gr.id,
+      },
       style: {
-        width: c.w,
-        height: c.h,
-        background: "rgba(148,163,184,0.07)",
-        border: "1px dashed #e2e8f0",
-        borderRadius: 12,
+        width: NODE_W,
+        padding: 8,
+        borderRadius: 8,
+        border: ring ? `3px solid ${ring}` : "1px dashed #94a3b8",
+        boxShadow: ring ? `0 0 0 5px ${ring}33, 0 2px 8px ${ring}40` : undefined,
+        background: ring ? `${ring}0f` : "#f8fafc",
+        fontSize: 12,
       },
     });
-    const total = c.members.length;
-    let slot = 0;
-    for (const m of c.members) {
-      const p = gridSlot(slot++, total, c.w);
-      if (m.t === "n") {
-        const n = byId.get(m.id);
-        if (n) flowNodes.push(nodeCard(n, p, c.id));
-      } else {
-        flowNodes.push(
-          groupHeaderCard(m.gid, m.kind, m.count, m.expanded, p, c.id),
-        );
-      }
-    }
-  }
-
-  // Kind-group cards that weren't packed into a grid.
-  for (const cc of groupCards) {
-    const p = g.node(cc.id);
-    if (!p) continue;
-    flowNodes.push(
-      groupHeaderCard(cc.id, cc.kind, cc.count, cc.expanded, {
-        x: p.x - NODE_W / 2,
-        y: p.y - NODE_H / 2,
-      }),
-    );
-  }
-
-  // Regular dagre-placed nodes.
-  for (const n of nodes) {
-    const p = pos.get(n.id);
-    if (p) flowNodes.push(nodeCard(n, p));
   }
 
   const flowEdges: FlowEdge[] = [];
-  for (const c of containers) {
-    const source = c.edgeFrom;
-    flowEdges.push({
-      id: `${source}->${c.id}`,
-      source,
-      target: c.id,
-      style: { stroke: "#cbd5e1" },
-    });
-  }
-  for (const cc of groupCards) {
-    flowEdges.push({
-      id: `${cc.parent}->${cc.id}`,
-      source: cc.parent,
-      target: cc.id,
-      style: { stroke: "#cbd5e1" },
-    });
-  }
-  // One caption per (source, kind), pinned under the source card (see
-  // RelationshipEdge). A fan-out — one Service selecting five Pods — reads as a
-  // single "selects" under the Service, not five copies scattered along the
-  // lines; a fan-in — five resources managed by one Kustomization — captions
-  // each source card individually.
-  const captioned = new Set<string>(); // `${source}|${kind}` already captioned
-  const captionSlots = new Map<string, number>(); // source → chips stacked so far
-  for (const e of edges) {
-    const rel = EDGE_STYLE[e.kind];
-    if (e.kind === "contains" && packed.has(e.target)) continue; // via container edge
-    // Members of collapsed groups aren't rendered — neither is their wiring.
-    if (hiddenMembers.has(e.source) || hiddenMembers.has(e.target)) continue;
-    // Wiring that touches packed members stays visible (orphans should LOOK
-    // different from wired resources) but dimmed and unlabeled unless it
-    // touches the selection.
-    const dimmed =
-      !!rel &&
-      (memberOf.has(e.source) || memberOf.has(e.target)) &&
-      e.source !== selectedId &&
-      e.target !== selectedId;
-    const child = byId.get(e.target);
-    // Infra containment renders child→parent so the line hangs from the
-    // upper (infra) node down into the cluster instead of looping around.
-    const flip = e.kind === "contains" && child && INFRA_KINDS.has(child.kind);
-    let caption: Pick<FlowEdge, "label" | "data"> | undefined;
-    if (e.kind !== "contains" && !dimmed && !captioned.has(`${e.source}|${e.kind}`)) {
-      captioned.add(`${e.source}|${e.kind}`);
-      const slot = captionSlots.get(e.source) ?? 0;
-      captionSlots.set(e.source, slot + 1);
-      caption = { label: e.kind, data: { labelSlot: slot } };
-    }
+  for (const e of visible.containment) {
+    const child = visible.nodes.find((n) => n.id === e.target);
+    const flip = child && INFRA_KINDS.has(child.kind);
     flowEdges.push({
       id: e.id,
       source: flip ? e.target : e.source,
       target: flip ? e.source : e.target,
-      ...caption,
-      type: e.kind === "contains" ? undefined : "rel",
-      style: rel
-        ? { stroke: rel.stroke, strokeDasharray: "6 3", opacity: dimmed ? 0.3 : 1 }
-        : { stroke: "#cbd5e1" },
+      style: { stroke: "#cbd5e1" },
     });
   }
 
   return { flowNodes, flowEdges };
 }
-
-// Relationship edge with a pinned caption. The default edge label sits at the
-// path midpoint as bare SVG text in the same paint layer as every edge path —
-// which failed two ways in a converging graph: lines drawn later struck the
-// text through, and nothing said which line (or node) the caption belonged to.
-// This fixes both by construction. <EdgeLabelRenderer> is an HTML layer stacked
-// above ALL edge paths, so no line can ever cross a chip; and the chip hangs
-// directly under the edge's SOURCE card — captions name what the source does
-// ("api managed-by …", "gateway selects …"), so that is the node they must
-// visually attach to. Several captions on one card stack downward.
-const CAPTION_GAP = 10; // px between the card's bottom edge and its first chip
-const CAPTION_STEP = 17; // px between stacked chips
-
-function RelationshipEdge({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  style,
-  label,
-  data,
-}: EdgeProps) {
-  // Orthogonal routing — bezier curves between same-rank siblings loop
-  // unpleasantly.
-  const [path] = getSmoothStepPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
-  });
-  if (label == null) return <BaseEdge id={id} path={path} style={style} />;
-  const slot = (data as { labelSlot?: number } | undefined)?.labelSlot ?? 0;
-  const color = (style?.stroke as string) ?? "#64748b";
-  return (
-    <>
-      <BaseEdge id={id} path={path} style={style} />
-      <EdgeLabelRenderer>
-        <div
-          style={{
-            position: "absolute",
-            // (sourceX, sourceY) is the bottom-centre handle the line leaves
-            // from, so the chip sits threaded onto its own edge's first segment.
-            transform: `translate(-50%, 0) translate(${sourceX}px, ${sourceY + CAPTION_GAP + slot * CAPTION_STEP}px)`,
-            pointerEvents: "none",
-            background: "#fff",
-            border: `1px solid ${color}`,
-            color,
-            borderRadius: 8,
-            padding: "0 5px",
-            fontSize: 9,
-            fontWeight: 600,
-            lineHeight: "13px",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {label}
-        </div>
-      </EdgeLabelRenderer>
-    </>
-  );
-}
-
-// Module-level so the mapping keeps one identity across renders — xyflow warns
-// and re-creates all edges when it changes.
-const EDGE_TYPES = { rel: RelationshipEdge };
 
 // Escape hatch for lost viewports: one click re-frames the whole graph.
 // (Needs the ReactFlow context, hence a child component inside <ReactFlow>.)
@@ -699,14 +348,8 @@ function RecenterButton() {
 interface Anchor {
   /** Id to look for after the reflow. Stable for cards and resources alike. */
   id: string;
-  /** The clicked node's absolute position *before* the reflow. */
+  /** The toggled card's absolute position *before* the reflow. */
   pos: Point;
-  /**
-   * The selection this anchor was captured for. A selection change that doesn't
-   * match it came from somewhere else (k9s handoff, tree, ?focus=) and must
-   * refit rather than anchor.
-   */
-  forSelection: string | null;
 }
 
 // Pans the viewport so the anchored node keeps its screen position once the new
@@ -741,24 +384,66 @@ function AnchorKeeper({
 }
 
 export function GraphCanvas({
-  nodes,
-  edges,
-  hiddenCounts,
+  visible,
+  relations,
+  outlines,
+  expanded,
+  childCounts,
+  marks,
+  canShowParent,
+  parentLabel,
   selectedId,
+  solo,
+  onToggleSolo,
+  onToggleExpand,
+  onToggleGroup,
+  onShowParent,
+  onGoToRelated,
+  spotlight,
+  revealTick,
   onSelect,
 }: Props) {
-  // Expanded kind-groups, keyed `__kg__<parent>__<kind>` so state survives
-  // refocusing between views.
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  // The spotlight fades on its own: it answers "which one did I just click",
+  // which stops being a question a second or two later. Keyed on the tick so
+  // clicking the same resource twice flags it twice.
+  //
+  // Picked up during render rather than in an effect — setting state
+  // synchronously in an effect cascades renders, and the tick already says
+  // whether this is a new request. The effect only schedules the fade, where
+  // the setState sits in a callback rather than the effect body.
+  const [flash, setFlash] = useState<{ tick: number; id: string | null }>({
+    tick: spotlight.tick,
+    id: null,
+  });
+  if (flash.tick !== spotlight.tick) {
+    setFlash({ tick: spotlight.tick, id: spotlight.id });
+  }
+  const flashId = flash.id;
+  useEffect(() => {
+    if (!flash.id) return;
+    const t = setTimeout(() => setFlash((f) => ({ ...f, id: null })), 1800);
+    return () => clearTimeout(t);
+  }, [flash.id, flash.tick]);
 
   const { flowNodes, flowEdges } = useMemo(
-    () => layout(nodes, edges, hiddenCounts, selectedId, expandedGroups),
-    [nodes, edges, hiddenCounts, selectedId, expandedGroups],
+    () => layout(visible, outlines, childCounts, marks, expanded, selectedId, flashId),
+    [visible, outlines, childCounts, marks, expanded, selectedId, flashId],
   );
 
   // Clicking in the canvas keeps the clicked node under the cursor: the anchor
   // is recorded at click time and applied once the new layout is in hand.
   const [anchor, setAnchor] = useState<Anchor | null>(null);
+  // Turns the viewport's CSS transition on for the length of one reflow. The
+  // counter-pan is still applied in a single instant call — CSS is what makes
+  // it *arrive* over 220ms, on the same curve as the cards, so the anchored
+  // card is stationary throughout instead of jumping the delta and sliding
+  // back. Scoped to the reflow because a dragged pan must stay instant.
+  const [panning, setPanning] = useState(false);
+  useEffect(() => {
+    if (!panning) return;
+    const t = setTimeout(() => setPanning(false), REFLOW_MS + 60);
+    return () => clearTimeout(t);
+  }, [panning]);
   const absPos = useMemo(() => absolutePositions(flowNodes), [flowNodes]);
   const clearAnchor = useCallback(() => setAnchor(null), []);
 
@@ -768,6 +453,9 @@ export function GraphCanvas({
   // handoff, ?focus= URL), where there is no screen position to preserve and
   // fitting the new subgraph is the right answer.
   const [viewKey, setViewKey] = useState(0);
+
+  // Whether the relationship panel lists individual resources or just counts.
+  const [listOpen, setListOpen] = useState(false);
 
   // Hover-dwell tooltip: linger on a node for HOVER_DELAY_MS and the full
   // (untruncated) identity appears — no click needed.
@@ -794,19 +482,22 @@ export function GraphCanvas({
   // tooltip would linger over the new view. Anchored selections don't remount,
   // but the layout still shifts under the tooltip, so both cases dismiss it.
   // Render-time adjustment instead of an effect, same pattern as ScopePanel.
+  // A different visible root is a different view (k9s handoff, ?focus=,
+  // "show parent"), so refit. Selection deliberately does NOT remount any more:
+  // remounting on every click is exactly how the old model threw away the
+  // user's place.
+  const rootId = visible.nodes[0]?.id ?? null;
+  const [seen, setSeen] = useState({ rootId, revealTick });
+  if (rootId !== seen.rootId || revealTick !== seen.revealTick) {
+    setSeen({ rootId, revealTick });
+    setViewKey((k) => k + 1);
+    if (anchor) setAnchor(null);
+    if (tip) setTip(null);
+  }
+  // Selection still dismisses the tooltip; it just doesn't move the graph.
   const [seenSelectedId, setSeenSelectedId] = useState(selectedId);
   if (selectedId !== seenSelectedId) {
     setSeenSelectedId(selectedId);
-    // Anchor only when this exact selection is the one the anchor was captured
-    // for. Anchor *presence* alone isn't enough: it lives until AnchorKeeper's
-    // effect runs, and an out-of-band selection (the k9s handoff is an IPC
-    // callback, not a discrete React event) could land in that window and be
-    // mistaken for the click's own. A stale anchor is dropped so the remount
-    // can't pan on top of fitView.
-    if (!anchor || anchor.forSelection !== selectedId) {
-      setViewKey((k) => k + 1);
-      if (anchor) setAnchor(null);
-    }
     if (tip) setTip(null);
   }
   // The dwell timer needs the same treatment: a timer scheduled in the old
@@ -823,7 +514,10 @@ export function GraphCanvas({
   };
 
   return (
-    <div ref={wrapRef} className="relative h-full w-full">
+    <div
+      ref={wrapRef}
+      className={`relative h-full w-full${panning ? " kscope-reflowing" : ""}`}
+    >
       {tip && (
         <div
           className="pointer-events-none absolute z-50 max-w-xs rounded-lg bg-slate-900 px-3 py-2 shadow-xl"
@@ -863,7 +557,6 @@ export function GraphCanvas({
         key={viewKey}
         nodes={flowNodes}
         edges={flowEdges}
-        edgeTypes={EDGE_TYPES}
         fitView
         // Whole-cluster views are wide; the default minZoom (0.5) would stop
         // fitView from actually fitting them.
@@ -874,37 +567,38 @@ export function GraphCanvas({
         // and "panning" on one flings the entire grid off-screen.
         nodesDraggable={false}
         onNodeClick={(_, n) => {
-          // Dismiss on click even when selectedId won't change (re-clicking
-          // the selected node, toggling a group) — the layout still shifts
-          // under the tooltip.
+          // Dismiss on click even when nothing moves — the layout may still
+          // shift under the tooltip.
           clearTip();
           const d = n.data as { raw?: GraphNode; groupToggle?: string };
-          // Where the clicked card is right now — the position to hold.
+          // Where the clicked card is right now — the position to hold across
+          // the reflow so toggling never teleports the thing you clicked.
           const here = absPos.get(n.id) ?? null;
+
+          // One gesture: clicking a card toggles it, and the ▸/▾ badge is an
+          // indicator rather than a second control. Anywhere on the card does
+          // the same thing, so there is nothing to aim at and nothing to learn.
           if (d.groupToggle) {
-            const gid = d.groupToggle;
-            // Direction comes from the set itself, never from the clicked id.
-            // The anchor holds the *card*, which keeps its id and its slot through
-            // the toggle — so this is right whether the click landed on the card
-            // or on the members box background, and `here` is deliberately unused
-            // for groups.
-            const cardPos = absPos.get(gid);
-            if (cardPos) {
-              setAnchor({ id: gid, pos: cardPos, forSelection: selectedId });
-            }
-            setExpandedGroups((prev) => {
-              const next = new Set(prev);
-              if (next.has(gid)) next.delete(gid);
-              else next.add(gid);
-              return next;
-            });
+            if (here) {
+            setAnchor({ id: d.groupToggle, pos: here });
+            setPanning(true);
+          }
+            onToggleGroup(d.groupToggle);
             return;
           }
-          if (d.raw) {
-            // Resource ids are stable across the reflow, so the node itself is
-            // the anchor. Batched with the selection change below.
-            if (here) setAnchor({ id: d.raw.id, pos: here, forSelection: d.raw.id });
-            onSelect(d.raw);
+          if (!d.raw) return;
+
+          onSelect(d.raw);
+          // A card with nothing inside it has nothing to toggle. This guard is
+          // not observable — expanding a childless node renders identically —
+          // so no test pins it; it is here to keep meaningless ids out of
+          // `expanded`, which prune and any future "collapse all" would inherit.
+          if ((childCounts.get(d.raw.id) ?? 0) > 0) {
+            if (here) {
+              setAnchor({ id: d.raw.id, pos: here });
+              setPanning(true);
+            }
+            onToggleExpand(d.raw.id);
           }
         }}
         onNodeMouseEnter={(e, n) => {
@@ -930,6 +624,95 @@ export function GraphCanvas({
       >
         <Background />
         <Controls />
+        <Panel position="top-left" className="flex items-center gap-2">
+          {canShowParent && (
+            <button
+              type="button"
+              onClick={onShowParent}
+              title="Bring the parent into view, keeping this branch open"
+              className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm hover:bg-white"
+            >
+              ⌃ show parent{parentLabel ? ` · ${parentLabel}` : ""}
+            </button>
+          )}
+          <label
+            title="While on, expanding a node collapses its siblings"
+            className="flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-sm"
+          >
+            <input
+              type="checkbox"
+              checked={solo}
+              onChange={onToggleSolo}
+              className="h-3 w-3 accent-blue-500"
+            />
+            one branch at a time
+          </label>
+        </Panel>
+        {relations.length > 0 && (
+          <Panel
+            position="top-right"
+            aria-label="Related to this"
+            className="max-w-xs rounded-md border border-slate-200 bg-white/95 px-3 py-2 shadow-sm"
+          >
+            <div className="mb-1 flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                related to this
+              </span>
+              <button
+                type="button"
+                onClick={() => setListOpen((v) => !v)}
+                aria-label={listOpen ? "Hide related resources" : "Show related resources"}
+                className="ml-auto rounded px-1 text-[10px] text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                {listOpen ? "▾" : "▸"}
+              </button>
+            </div>
+            <ul className="space-y-1">
+              {relations.map((r) => (
+                <li key={`${r.kind}-${r.phrase}`}>
+                  <div
+                    className="flex items-center gap-2 text-xs"
+                    title={r.meaning}
+                  >
+                    <span
+                      aria-hidden
+                      className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                      style={{ background: r.color }}
+                    />
+                    <span className="cursor-help text-slate-700 underline decoration-slate-300 decoration-dotted underline-offset-2">
+                      {r.phrase}
+                    </span>
+                    <span className="ml-auto text-slate-400">
+                      {r.cardIds.length}
+                      {r.count !== r.cardIds.length ? ` (${r.count})` : ""}
+                    </span>
+                  </div>
+                  {listOpen && (
+                    <ul className="ml-[18px] mt-0.5 space-y-0.5">
+                      {r.items.map((it) => (
+                        <li key={it.id}>
+                          <button
+                            type="button"
+                            onClick={() => onGoToRelated(it.id)}
+                            title={`${it.kind} ${it.name} — show it on the canvas`}
+                            className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-[11px] text-slate-600 hover:bg-slate-100"
+                          >
+                            <span
+                              className={`shrink-0 rounded px-1 text-[9px] font-semibold ${kindChipClass(it.kind)}`}
+                            >
+                              {kindAbbrev(it.kind)}
+                            </span>
+                            <span className="truncate">{it.name}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
         <RecenterButton />
         <AnchorKeeper anchor={anchor} absPos={absPos} onApplied={clearAnchor} />
         {flowNodes.length > 15 && <MiniMap pannable zoomable />}

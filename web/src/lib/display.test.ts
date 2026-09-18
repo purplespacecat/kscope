@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   gitopsManagerId,
   health,
+  edgeMeaning,
+  edgePhrase,
   incomingEdgeLabel,
   kindDocsUrl,
   worseOf,
@@ -75,5 +77,76 @@ describe("kindDocsUrl", () => {
     expect(kindDocsUrl("Component", "api-server")?.url).toContain("kube-apiserver");
     expect(kindDocsUrl("Component", "datastore (kine)")?.url).toContain("k3s.io");
     expect(kindDocsUrl("Component", "mystery")).toBeNull();
+  });
+});
+
+describe("edgePhrase", () => {
+  it("says what a Service actually does to a Pod", () => {
+    expect(edgePhrase("selects", "out", "Service")).toBe("routes to");
+    expect(edgePhrase("selects", "in", "Service")).toBe("routed to by");
+  });
+
+  // Same edge kind, different source, genuinely different sentence: a policy
+  // governs a Pod, it does not route anything to it.
+  it("says something different when the source is a NetworkPolicy", () => {
+    expect(edgePhrase("selects", "out", "NetworkPolicy")).toBe("applies to");
+    expect(edgePhrase("selects", "in", "NetworkPolicy")).toBe("governed by");
+  });
+
+  it("reads as a sentence for the kinds that do not vary", () => {
+    expect(edgePhrase("references", "out")).toBe("reads");
+    expect(edgePhrase("references", "in")).toBe("read by");
+    expect(edgePhrase("uses", "out")).toBe("runs as");
+    expect(edgePhrase("scheduled-on", "out")).toBe("runs on");
+    expect(edgePhrase("binds", "out")).toBe("bound to");
+  });
+
+  it("falls back to the raw kind for an edge it has no words for", () => {
+    expect(edgePhrase("frobnicates", "out")).toBe("frobnicates");
+    expect(edgePhrase("frobnicates", "in")).toBe("frobnicates ←");
+  });
+});
+
+describe("edgeMeaning", () => {
+  it("explains how the relationship was actually inferred", () => {
+    // The point is to say something the phrase itself does not.
+    expect(edgeMeaning("selects", "Service")).toMatch(/label/i);
+    expect(edgeMeaning("references", undefined)).toMatch(/env/i);
+    expect(edgeMeaning("mounts", undefined)).toMatch(/volume/i);
+  });
+
+  it("distinguishes the two things a label-selector match can mean", () => {
+    const svc = edgeMeaning("selects", "Service");
+    const np = edgeMeaning("selects", "NetworkPolicy");
+    expect(svc).not.toBe(np);
+    expect(np).toMatch(/polic/i);
+  });
+
+  // A tooltip is read at a glance or not at all. Anything longer than a clause
+  // is a paragraph hovering over the thing it is meant to explain.
+  it("keeps every explanation to one short sentence", () => {
+    const kinds = [
+      "mounts",
+      "references",
+      "uses",
+      "selects",
+      "exposes",
+      "binds",
+      "scheduled-on",
+      "depends-on",
+      "managed-by",
+      "sourced-from",
+      "instance-of",
+    ];
+    for (const kind of [...kinds, "selects:Service", "selects:NetworkPolicy"]) {
+      const [k, src] = kind.split(":");
+      const text = edgeMeaning(k, src)!;
+      expect(text, kind).toBeTruthy();
+      expect(text.length, `${kind}: ${text}`).toBeLessThanOrEqual(90);
+    }
+  });
+
+  it("says nothing rather than something empty for a kind it has no words for", () => {
+    expect(edgeMeaning("frobnicates", undefined)).toBeUndefined();
   });
 });

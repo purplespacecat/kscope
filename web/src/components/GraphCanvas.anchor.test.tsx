@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // fireEvent, not user-event: a full pointer sequence reaches d3-zoom's mousedown
 // handler, which dereferences `event.view` — null on jsdom-dispatched events.
 // Only the React onClick matters here.
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { Snapshot } from "../types/graph";
@@ -10,12 +10,10 @@ import type { Snapshot } from "../types/graph";
 // @xyflow/react needs browser APIs jsdom lacks. This is the minimum to get the
 // canvas rendering headlessly, which is why App.test.tsx mocks it out instead.
 //
-// KNOWN LIMIT: nodes inside a group container (`extent: "parent"`) come out with
-// garbage positions here — xyflow clamps them against a parent it measures as
-// 0x0, so all members land on one point. Container geometry therefore can't be
-// asserted in jsdom; the group-card anchoring maths is covered by unit tests in
-// lib/viewport.test.ts instead, and the tests below stick to behaviour that does
-// survive: top-level node geometry, and toggle/selection semantics.
+// Every card is a top-level node now — the old `extent: "parent"` containers are
+// gone with the packing they existed for — so node geometry is assertable here.
+// What visibility MEANS is unit-tested in lib/tree.test.ts without a DOM; these
+// tests cover only what needs one: toggles, anchoring, and selection semantics.
 class ResizeObserverStub {
   private cb: ResizeObserverCallback;
   constructor(cb: ResizeObserverCallback) {
@@ -53,16 +51,10 @@ const NODE_H = 56;
 const NS = "core/namespace/web";
 const DEP = "apps/deployment/web/api";
 const POD_GROUP = `__kg__${DEP}__Pod`;
-// The members-only box that appears below the card once the group is expanded.
-const POD_BOX = `${POD_GROUP}__m`;
 const pods = Array.from({ length: 6 }, (_, i) => `core/pod/web/api-6d4f${i}`);
 
-// A SECOND namespace subtree is load-bearing, not scenery. With only one branch,
-// focusSubgraph returns a byte-identical node and edge set before and after DEP
-// is selected — the spine re-adds cluster and ns, then descends to the same
-// pods — so the layout never changes, the anchor delta is (0,0), and an
-// anchoring assertion would pass even with the feature deleted. Selecting DEP
-// prunes this sibling, which is what makes DEP actually move.
+// A SECOND namespace subtree is load-bearing, not scenery: it is what proves a
+// selection leaves other branches alone, and what solo mode has to fold away.
 const NS2 = "core/namespace/other";
 const DEP2 = "apps/deployment/other/worker";
 const pods2 = Array.from({ length: 6 }, (_, i) => `core/pod/other/worker-8a2b${i}`);
@@ -77,8 +69,7 @@ const pod = (id: string, parentId: string, namespace: string) => ({
 });
 
 // Each deployment holds 6 same-kind leaves — past GROUP_AT — so its pods fold
-// into a collapsed kind-group card. 17 nodes total stays under NODE_BUDGET (40),
-// so the unfocused view really does show both branches.
+// into a collapsed kind-group card once the Deployment is expanded.
 const snapshot: Snapshot = {
   scope: { context: "kind-dev", namespaces: ["web", "other"] },
   timestamp: "2026-08-11T09:00:00Z",
@@ -154,202 +145,359 @@ const NOTHING_SELECTED = "Select a resource in the tree or graph to inspect it."
 beforeEach(() => {
   window.history.replaceState(null, "", "/");
   state.snapshot = snapshot;
+  delete (window as unknown as { runtime?: unknown }).runtime;
 });
 
-// Mirrors the reported case: a namespace with seven group-forming kinds, so its
-// children exceed WRAP_AT and get packed into a `__grid__` container. The card is
-// then a grid member rather than a top-level dagre node — a different code path
-// for both ranking and anchor resolution, and the one the bug was reported
-// against. 23 nodes keeps it under NODE_BUDGET.
-const GRID_NS = "core/namespace/flux-system";
-const GRID_ID = `__grid__${GRID_NS}`;
-const GRID_KINDS = [
-  "ConfigMap",
-  "Secret",
-  "Service",
-  "ServiceAccount",
-  "NetworkPolicy",
-  "Kustomization",
-  "GitRepository",
-];
-const GR_GROUP = `__kg__${GRID_NS}__GitRepository`;
+/** The ▸/▾ badge inside a card — structure, as opposed to the card body. */
+const toggleEl = (id: string) =>
+  nodeEl(id)?.querySelector("[data-toggle]") as HTMLElement | null;
 
-const griddedSnapshot: Snapshot = {
-  scope: { context: "kind-dev", namespaces: ["flux-system"] },
-  timestamp: "2026-08-11T09:00:00Z",
-  cluster: { context: "kind-dev", server: "https://x", version: "v1.33.0" },
-  nodes: [
-    { id: "cluster", kind: "Cluster", name: "kind-dev", health: "healthy", synthetic: true },
-    {
-      id: GRID_NS,
-      kind: "Namespace",
-      name: "flux-system",
-      parentId: "cluster",
-      health: "healthy",
-    },
-    ...GRID_KINDS.flatMap((kind) =>
-      [0, 1, 2].map((i) => ({
-        id: `${kind.toLowerCase()}/flux-system/${kind}-${i}`,
-        kind,
-        name: `${kind}-${i}`,
-        parentId: GRID_NS,
-        namespace: "flux-system",
-        health: "healthy" as const,
-      })),
-    ),
-  ],
-  edges: [],
-};
+/** Open a path from the root down, one toggle at a time. */
+async function expandPath(...ids: string[]) {
+  for (const id of ids) {
+    await waitFor(() => expect(toggleEl(id)).toBeTruthy());
+    fireEvent.click(toggleEl(id)!);
+  }
+}
 
-describe("focus anchoring", () => {
-  it("keeps a clicked resource at the same screen position while its subgraph is rebuilt", async () => {
+describe("expansion is the user's", () => {
+  it("shows the cluster's namespaces and nothing deeper on first load", async () => {
     renderApp();
-    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    expect(nodeEl(NS2)).toBeTruthy();
+    // One level only: a namespace's contents wait to be asked for.
+    expect(nodeEl(DEP)).toBeNull();
+  });
 
-    const beforeScreen = screenPos(DEP);
-    const beforeLayout = translateOf(nodeEl(DEP)!);
-    fireEvent.click(nodeEl(DEP)!);
+  it("keeps the toggled card at the same screen position while the tree reflows", async () => {
+    renderApp();
+    await expandPath(NS, DEP);
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+
+    // The group card, not the Deployment: expanding a single-child chain moves
+    // nothing, so anchoring it would assert nothing. Six members re-centre the
+    // card over a much wider subtree, which is a reflow the eye would notice.
+    const beforeScreen = screenPos(POD_GROUP);
+    const beforeLayout = translateOf(nodeEl(POD_GROUP)!);
+    fireEvent.click(nodeEl(POD_GROUP)!);
 
     // Both halves matter. The layout assertion proves the reflow actually
-    // happened (otherwise the screen-position assertion is vacuous — it would
-    // hold even with anchoring removed); the screen assertion proves the pan
-    // compensated for it.
+    // happened (otherwise the screen assertion is vacuous — it would hold with
+    // anchoring deleted); the screen assertion proves the pan compensated.
     await waitFor(() => {
-      expect(translateOf(nodeEl(DEP)!)).not.toEqual(beforeLayout);
-      const afterScreen = screenPos(DEP);
+      expect(nodeEl(pods[0])).toBeTruthy();
+      expect(translateOf(nodeEl(POD_GROUP)!)).not.toEqual(beforeLayout);
+    });
+    // The counter-pan is animated now, over the same curve as the cards, so the
+    // card is stationary *throughout* rather than only at the end — but the
+    // assertion has to wait for the transition to land before reading it.
+    await waitFor(() => {
+      const afterScreen = screenPos(POD_GROUP);
       expect(afterScreen.x).toBeCloseTo(beforeScreen.x, 1);
       expect(afterScreen.y).toBeCloseTo(beforeScreen.y, 1);
     });
   });
 
+  // The reflow animation itself is CSS, which jsdom does not run — so what is
+  // testable is the switch that scopes it: the viewport may only glide while a
+  // counter-pan is in flight, or dragging the canvas would feel laggy.
+  it("turns the viewport transition on for a reflow and off again after", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderApp();
+      await expandPath(NS, DEP);
+      await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+      const canvas = () => document.querySelector(".relative.h-full.w-full")!;
+      // The expands above armed it too; let those settle first.
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+      expect(canvas().className).not.toContain("kscope-reflowing");
+
+      fireEvent.click(nodeEl(POD_GROUP)!);
+      expect(canvas().className).toContain("kscope-reflowing");
+
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+      expect(canvas().className).not.toContain("kscope-reflowing");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // THE regression this whole change exists to prevent. Under the old model,
+  // selecting re-derived the visible set from the selection, so clicking a
+  // sibling silently threw away everything the user had opened.
+  it("leaves every other branch exactly as it was when a card is clicked", async () => {
+    renderApp();
+    await expandPath(NS, NS2, DEP);
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+    expect(nodeEl(DEP2)).toBeTruthy();
+
+    fireEvent.click(nodeEl(DEP)!); // toggles DEP, and nothing else
+
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeNull());
+    // The old model rebuilt the whole view from the selection, so a click here
+    // threw away the other namespace. Nothing outside this card may move.
+    expect(nodeEl(NS2)).toBeTruthy();
+    expect(nodeEl(DEP2)).toBeTruthy();
+    expect(nodeEl(NS)).toBeTruthy();
+  });
+
+  // One rule everywhere: clicking a card opens it, clicking its arrow closes it.
+  // Before this, a group card opened on a body click while a resource card only
+  // responded to its arrow — so clicking a Deployment looked like it did nothing.
+  it("opens a node's children when the card itself is clicked", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    expect(nodeEl(DEP)).toBeNull();
+
+    fireEvent.click(nodeEl(NS)!); // the card body, not the arrow
+
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+  });
+
+  it("selects the resource it opened, so one click answers both questions", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+
+    fireEvent.click(nodeEl(NS)!);
+
+    await waitFor(() => expect(screen.queryByText(NOTHING_SELECTED)).toBeNull());
+    expect(nodeEl(DEP)).toBeTruthy();
+  });
+
+  it("closes an open card when its body is clicked again", async () => {
+    renderApp();
+    await expandPath(NS);
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+
+    fireEvent.click(nodeEl(NS)!);
+
+    await waitFor(() => expect(nodeEl(DEP)).toBeNull());
+    expect(nodeEl(NS)).toBeTruthy(); // the card itself stays
+  });
+
+  it("treats the arrow and the card as the same gesture", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+
+    fireEvent.click(toggleEl(NS)!); // arrow opens
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+    fireEvent.click(nodeEl(NS)!); // body closes
+    await waitFor(() => expect(nodeEl(DEP)).toBeNull());
+    fireEvent.click(nodeEl(NS)!); // body opens again
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+  });
+
+  it("opens and closes a group card from its body", async () => {
+    renderApp();
+    await expandPath(NS, DEP);
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+
+    fireEvent.click(nodeEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
+    fireEvent.click(nodeEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(pods[0])).toBeNull());
+  });
+
   it("expands and collapses from the card, which stays put throughout", async () => {
     renderApp();
+    await expandPath(NS, DEP);
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
     expect(nodeEl(pods[0])).toBeNull(); // collapsed: members not rendered
 
     fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
-    expect(nodeEl(pods[0])).toBeTruthy();
+    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
 
     // The card is the same node in both states — it never leaves the layout — so
     // the round trip is driven from it rather than from a replacement header.
-    fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(POD_BOX)).toBeNull());
-    expect(nodeEl(pods[0])).toBeNull();
+    // Closing goes through the arrow: a body click only ever opens.
+    fireEvent.click(toggleEl(POD_GROUP)!);
+    await waitFor(() => expect(nodeEl(pods[0])).toBeNull());
     expect(nodeEl(POD_GROUP)).toBeTruthy();
   });
 
-  it("puts the members in a box below the card, not in a box beside it", async () => {
-    // The reported bug: the expanded group left the parent's grid and became a
-    // container ranked as the grid's *sibling*, so dagre placed the two side by
-    // side, the ~1300px box overflowed the viewport and the grid was shoved off
-    // the opposite edge.
-    //
-    // Only placement is asserted here. The card's *screen* position — the "don't
-    // throw me around" half — can't be checked in jsdom: the initial fitView
-    // never completes (nothing is measured), so it retries on this very node
-    // update and permanently overwrites the anchor pan. Measured directly: zoom
-    // goes 1 → 0.07 on the expand, which anchoring never does. That half is
-    // browser-verified.
+  it("ranks an expanded group's members below its card, not beside it", async () => {
+    // Preserved intent from the old members-box test: expanding must grow the
+    // tree downward. Sideways growth was the reported bug — a ~1300px box ranked
+    // as the card's sibling shoved the rest off the viewport.
     renderApp();
+    await expandPath(NS, DEP);
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
 
     fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
+    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
 
     const card = translateOf(nodeEl(POD_GROUP)!);
-    const box = translateOf(nodeEl(POD_BOX)!);
-    expect(box.y).toBeGreaterThan(card.y); // below…
-    expect(box.y - card.y).toBeGreaterThan(NODE_H); // …by more than the card's own height
-  });
-
-  // The remount decision needs its own observable. fitView is a no-op under
-  // jsdom (nothing is measured), so "did the view re-frame?" can't distinguish
-  // the two paths — but DOM element identity can: changing the key unmounts the
-  // subtree, so every node element is rebuilt.
-  it("does not remount the canvas for a selection made in the canvas", async () => {
-    renderApp();
-    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
-
-    const before = nodeEl(DEP);
-    fireEvent.click(nodeEl(DEP)!);
-    await waitFor(() => expect(nodeEl(NS2)).toBeNull()); // subgraph did rebuild
-
-    expect(nodeEl(DEP)).toBe(before); // same element ⇒ no remount ⇒ no refit
-  });
-
-  it("remounts the canvas for a selection made in the tree", async () => {
-    renderApp();
-    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
-
-    const before = nodeEl(DEP);
-    const row = await waitFor(() => document.querySelector('[title="Namespace: web"]')!);
-    fireEvent.click(row);
-
-    // A tree click has no on-screen origin to preserve, so this path keeps the
-    // fit-the-new-subgraph behaviour, which is driven by the remount. Assert the
-    // node is still rendered as well as rebuilt — `null !== before` would
-    // otherwise satisfy this if DEP simply dropped out of the subgraph.
-    await waitFor(() => {
-      const after = nodeEl(DEP);
-      expect(after).toBeTruthy();
-      expect(after).not.toBe(before);
-    });
-  });
-
-  it("collapses when the members box background is clicked", async () => {
-    renderApp();
-    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
-
-    fireEvent.click(nodeEl(POD_GROUP)!); // the card → expand
-    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
-
-    // The box's padding and the gaps between members are clickable, and clicking
-    // there collapses the group. It carries its own id rather than sharing the
-    // card's, which is what previously made a background click read as "expand".
-    fireEvent.click(nodeEl(POD_BOX)!);
-    await waitFor(() => expect(nodeEl(POD_BOX)).toBeNull());
-    expect(nodeEl(pods[0])).toBeNull();
-    expect(nodeEl(POD_GROUP)).toBeTruthy();
+    const member = translateOf(nodeEl(pods[0])!);
+    expect(member.y).toBeGreaterThan(card.y); // below…
+    expect(member.y - card.y).toBeGreaterThan(NODE_H); // …clear of the card itself
   });
 
   it("leaves the selection alone when a group card is toggled", async () => {
     renderApp();
+    await expandPath(NS, DEP);
     await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
-    expect(await screen.findByText(NOTHING_SELECTED)).toBeInTheDocument();
+    // Expanding by clicking selects as it goes, so the Deployment is current.
+    // The URL is the unambiguous record of that — the card's own name appears
+    // in the tree and the details panel too.
+    expect(window.location.search).toContain(encodeURIComponent(DEP));
 
     fireEvent.click(nodeEl(POD_GROUP)!);
-    await waitFor(() => expect(nodeEl(POD_BOX)).toBeTruthy());
+    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
 
-    // Group cards aren't resources: expanding one must not hijack the details
-    // panel or re-root the focus subgraph.
-    expect(screen.getByText(NOTHING_SELECTED)).toBeInTheDocument();
+    // A group card is not a resource: it has no details to show, so it must not
+    // take the selection away from whatever does.
+    expect(window.location.search).toContain(encodeURIComponent(DEP));
   });
 
-  it("ranks the members box below the grid when the card is packed into one", async () => {
-    // Seven group-forming kinds push the namespace past WRAP_AT, so the card is a
-    // grid member. Measured behaviour: the box hangs off the grid container, so it
-    // lands below the grid rather than directly beneath its own card — worth
-    // pinning, since this is the shape the bug was reported against and the anchor
-    // has to resolve the card through the grid's parentId chain.
-    state.snapshot = griddedSnapshot;
+  // A reveal can open several levels at once, so the target may land anywhere
+  // in a large layout. Selection inside the canvas must NOT refit — that was the
+  // old model's way of losing your place — but a pick from the sidebar has no
+  // on-screen origin to preserve, so it re-frames, as it always did.
+  it("re-frames when a node is revealed from the tree", async () => {
     renderApp();
-    await waitFor(() => expect(nodeEl(GRID_ID)).toBeTruthy());
-    expect(nodeEl(GR_GROUP)).toBeTruthy(); // the card, packed inside the grid
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    const before = nodeEl(NS);
 
-    fireEvent.click(nodeEl(GR_GROUP)!);
-    await waitFor(() => expect(nodeEl(`${GR_GROUP}__m`)).toBeTruthy());
+    // Open the sidebar tree down to the Deployment, then pick it there. The
+    // sidebar keeps its own expansion state, so this says nothing about the
+    // canvas until the click lands.
+    const expandRow = (kind: string, name: string) => {
+      const row = document.querySelector(`[title="${kind}: ${name}"]`)!;
+      const caret = row.parentElement?.querySelector('[aria-label="Expand"]');
+      if (caret) fireEvent.click(caret);
+    };
+    await waitFor(() => expect(document.querySelector('[title="Namespace: web"]')).toBeTruthy());
+    expandRow("Namespace", "web");
+    const row = await waitFor(() => document.querySelector('[title="Deployment: api"]')!);
+    fireEvent.click(row);
 
-    // Clear of the grid's *bottom edge*, which is what distinguishes a rank below
-    // from a sibling on the same rank. Comparing bare `y` values would pass
-    // either way: dagre centres nodes within a rank, so a shorter box sits a few
-    // pixels lower than a taller grid even as its sibling.
-    const grid = nodeEl(GRID_ID)! as HTMLElement;
-    const gridBottom = translateOf(grid).y + parseFloat(grid.style.height);
-    expect(translateOf(nodeEl(`${GR_GROUP}__m`)!).y).toBeGreaterThanOrEqual(
-      gridBottom,
-    );
-    // The card survives the toggle and stays inside the grid.
-    expect(nodeEl(GR_GROUP)).toBeTruthy();
+    await waitFor(() => {
+      expect(nodeEl(DEP)).toBeTruthy(); // revealed
+      const after = nodeEl(NS);
+      expect(after).toBeTruthy();
+      expect(after).not.toBe(before); // remounted ⇒ refit
+    });
+  });
+});
+
+describe("solo mode", () => {
+  const soloSwitch = () => screen.getByLabelText(/one branch at a time/i);
+
+  it("is off until asked for, so two branches stay open side by side", async () => {
+    renderApp();
+    await expandPath(NS, NS2);
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+    expect(nodeEl(DEP2)).toBeTruthy();
+  });
+
+  it("collapses the sibling branch when expanding with it on", async () => {
+    renderApp();
+    await expandPath(NS);
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+
+    fireEvent.click(soloSwitch());
+    await expandPath(NS2);
+
+    await waitFor(() => expect(nodeEl(DEP2)).toBeTruthy());
+    expect(nodeEl(DEP)).toBeNull(); // the other branch folded itself away
+    expect(nodeEl(NS)).toBeTruthy(); // …but its card is still there to reopen
+  });
+
+  it("resurrects nothing when switched back off", async () => {
+    renderApp();
+    await expandPath(NS);
+    fireEvent.click(soloSwitch());
+    await expandPath(NS2);
+    await waitFor(() => expect(nodeEl(DEP)).toBeNull());
+
+    fireEvent.click(soloSwitch()); // off again
+    // Nothing was hidden — things were genuinely collapsed — so turning the
+    // mode off must not reopen them behind the user's back.
+    await waitFor(() => expect(nodeEl(DEP2)).toBeTruthy());
+    expect(nodeEl(DEP)).toBeNull();
+  });
+});
+
+/**
+ * Stand in for the Wails runtime so the k9s handoff can be driven from a test.
+ * The desktop emits `kscope:focus` over IPC (cmd/kscope-desktop/focus.go) — it
+ * never goes through the URL, which is why ?focus= must mean something else.
+ */
+function stubDesktopRuntime() {
+  const handlers = new Map<string, (...a: unknown[]) => void>();
+  (window as unknown as { runtime: unknown }).runtime = {
+    EventsOn: (name: string, cb: (...a: unknown[]) => void) => {
+      handlers.set(name, cb);
+      return () => handlers.delete(name);
+    },
+  };
+  return (name: string, payload: unknown) => handlers.get(name)?.(payload);
+}
+
+describe("arriving from outside", () => {
+  it("restores a ?focus= selection without stranding the view on it", async () => {
+    // Every click writes ?focus= to the URL, so a reload must not leave the
+    // user marooned on a single leaf card with the rest of the map gone.
+    window.history.replaceState(null, "", `/?focus=${encodeURIComponent(DEP)}`);
+    renderApp();
+
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+    // Revealed and selected…
+    expect(window.location.search).toContain(encodeURIComponent(DEP));
+    // …but the map is still the map: the root is the cluster, not the target.
+    expect(nodeEl("cluster")).toBeTruthy();
+    expect(nodeEl(NS2)).toBeTruthy();
+  });
+
+  it("starts a k9s handoff at the resource, with its ancestors one click away", async () => {
+    const emit = stubDesktopRuntime();
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+
+    emit("kscope:focus", { id: DEP });
+
+    await waitFor(() => expect(nodeEl(DEP)).toBeTruthy());
+    expect(nodeEl("cluster")).toBeNull(); // ancestors not drawn
+    expect(nodeEl(POD_GROUP)).toBeTruthy(); // own children are
+    expect(screen.getByText(/show parent/i)).toBeInTheDocument();
+  });
+
+  it("offers a climb even when the handoff lands on a leaf", async () => {
+    // A ConfigMap has nothing below it, so the climb is the only way out — it
+    // had better be on screen.
+    const emit = stubDesktopRuntime();
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+
+    emit("kscope:focus", { id: pods[0] });
+
+    await waitFor(() => expect(nodeEl(pods[0])).toBeTruthy());
+    expect(document.querySelectorAll(".react-flow__node")).toHaveLength(1);
+    expect(screen.getByText(/show parent/i)).toBeInTheDocument();
+  });
+
+  it("raises the root and keeps the branch below it open", async () => {
+    const emit = stubDesktopRuntime();
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    emit("kscope:focus", { id: DEP });
+    await waitFor(() => expect(nodeEl(POD_GROUP)).toBeTruthy());
+
+    fireEvent.click(screen.getByText(/show parent/i));
+
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    // Context gained without losing the place: the branch is still open.
+    expect(nodeEl(DEP)).toBeTruthy();
+    expect(nodeEl(POD_GROUP)).toBeTruthy();
+  });
+
+  it("offers no climb at the top of the tree", async () => {
+    renderApp();
+    await waitFor(() => expect(nodeEl(NS)).toBeTruthy());
+    expect(screen.queryByText(/show parent/i)).toBeNull();
   });
 });

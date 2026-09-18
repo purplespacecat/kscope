@@ -32,6 +32,14 @@
   when an *identity* filter (`--name-contains`/`--kind`/`--namespace`) matches nothing;
   a `--health` filter matching nothing is a result, not a miss, and exits 0. Projection on stdout,
   everything else on stderr; `--help` is the one exception and goes to stdout.
+- `web/src/lib/tree.ts` is the **single source of visibility** for the graph canvas:
+  `visibleTree(nodes, {rootId, expanded, expandedGroups})` decides what is on screen, and
+  `GraphCanvas` only lays out what it is handed. Expansion is written **only** by user
+  gestures — never derived from selection, which is what used to collapse things nobody
+  asked to collapse. Solo mode ("one branch at a time") is an action modifier applied in
+  `toggleExpand`, never read by `visibleTree`; if it ever leaks into the derivation,
+  turning it off would resurrect branches. Spec in the vault
+  (`specs/2026-09-17-kscope-org-chart-view.md`).
 - `internal/graph/view.go` is a **pure** projection (snapshot + focus → text): no I/O, no
   clock, no flags. Its byte budget is a hard cap — if you change what `emit` writes, change
   what `measure` prices, or the guarantee silently breaks.
