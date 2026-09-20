@@ -11,122 +11,22 @@ import {
   type FocusRequest,
 } from "./lib/desktop";
 import type { GraphEdge, GraphNode } from "./types/graph";
+import {
+  controllerMarks,
+  outlineColors,
+  prune,
+  relate,
+  reveal,
+  showParent,
+  toggleExpand,
+  toggleGroup,
+  type TreeState,
+  visibleTree,
+} from "./lib/tree";
 
 // Stable empty arrays so hooks downstream don't re-fire while loading.
 const NO_NODES: GraphNode[] = [];
 const NO_EDGES: GraphEdge[] = [];
-
-// Cap on nodes in one focus view. Layers past the budget are hidden behind a
-// "+N" chip — one click on the parent reveals them. Keeps dagre readable:
-// the cluster default shows just the namespace fan, a namespace shows its
-// workloads (and pods when they fit).
-const NODE_BUDGET = 40;
-
-// Focus = the selected node's ancestry spine (context: where it lives) plus
-// its descendant layers (content: what it contains), drawn as "contains"
-// edges. No selection focuses the cluster root — the whole map.
-function focusSubgraph(
-  all: GraphNode[],
-  allEdges: GraphEdge[],
-  selectedId: string | null,
-): { nodes: GraphNode[]; edges: GraphEdge[]; hidden: Map<string, number> } {
-  const hidden = new Map<string, number>();
-  if (all.length === 0) return { nodes: [], edges: [], hidden };
-  const byId = new Map(all.map((n) => [n.id, n]));
-  const children = new Map<string, GraphNode[]>();
-  for (const n of all) {
-    if (!n.parentId || !byId.has(n.parentId)) continue;
-    const list = children.get(n.parentId);
-    if (list) list.push(n);
-    else children.set(n.parentId, [n]);
-  }
-
-  const root =
-    (selectedId ? byId.get(selectedId) : undefined) ??
-    all.find((n) => !n.parentId) ??
-    all[0];
-
-  const nodes: GraphNode[] = [];
-  const edges: GraphEdge[] = [];
-  const seen = new Set<string>();
-  const add = (n: GraphNode) => {
-    if (!seen.has(n.id)) {
-      seen.add(n.id);
-      nodes.push(n);
-    }
-  };
-
-  // Ancestry spine, root-of-tree first.
-  const spine: GraphNode[] = [];
-  for (
-    let cur: GraphNode | undefined = root;
-    cur;
-    cur = cur.parentId ? byId.get(cur.parentId) : undefined
-  ) {
-    spine.push(cur);
-  }
-  spine.reverse();
-  for (const n of spine) add(n);
-  for (let i = 0; i + 1 < spine.length; i++) {
-    edges.push({
-      id: `${spine[i].id}->${spine[i + 1].id}`,
-      source: spine[i].id,
-      target: spine[i + 1].id,
-      kind: "contains",
-    });
-  }
-
-  // Descend level by level under the focus root, stopping before a level
-  // that would blow the budget — deeper layers are one click away. The first
-  // level below the root is always included so a selection never looks empty.
-  let frontier = [root];
-  let level = 0;
-  while (frontier.length > 0) {
-    const next = frontier.flatMap((p) => children.get(p.id) ?? []);
-    if (next.length === 0) break;
-    if (level > 0 && nodes.length + next.length > NODE_BUDGET) {
-      for (const parent of frontier) {
-        const kids = children.get(parent.id) ?? [];
-        if (kids.length > 0) hidden.set(parent.id, kids.length);
-      }
-      break;
-    }
-    for (const parent of frontier) {
-      for (const child of children.get(parent.id) ?? []) {
-        add(child);
-        edges.push({
-          id: `${parent.id}->${child.id}`,
-          source: parent.id,
-          target: child.id,
-          kind: "contains",
-        });
-      }
-    }
-    frontier = next;
-    level++;
-  }
-
-  // Relationship overlay: wiring between nodes already in view (a namespace
-  // focus shows its services selecting its pods), plus the selected node's
-  // own 1-hop neighbors — pulled in even from outside the containment view
-  // (a pod focus shows the ConfigMaps it mounts).
-  for (const e of allEdges) {
-    const srcIn = seen.has(e.source);
-    const tgtIn = seen.has(e.target);
-    const touchesSelected =
-      selectedId !== null &&
-      (e.source === selectedId || e.target === selectedId);
-    if (!(srcIn && tgtIn) && !touchesSelected) continue;
-    const src = byId.get(e.source);
-    const tgt = byId.get(e.target);
-    if (!src || !tgt) continue;
-    add(src);
-    add(tgt);
-    edges.push(e);
-  }
-
-  return { nodes, edges, hidden };
-}
 
 export default function App() {
   const { data: snapshot, isLoading, error } = useLatest();
@@ -136,6 +36,23 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get("focus"),
   );
+
+  // Expansion state for the graph. Written only by user gestures — a toggle, a
+  // reveal, "show parent", or the one-time seed below. Deliberately NOT derived
+  // from selection: that was what collapsed things nobody asked to collapse.
+  const [tree, setTree] = useState<TreeState>(() => ({
+    rootId: null,
+    expanded: new Set<string>(),
+    expandedGroups: new Set<string>(),
+  }));
+  // "One branch at a time": opt-in auto-collapse of siblings on expand.
+  const [solo, setSolo] = useState(false);
+  // Bumped by reveals from outside the canvas, to ask it to re-frame.
+  const [revealTick, setRevealTick] = useState(0);
+  const [spotlight, setSpotlight] = useState<{ id: string | null; tick: number }>({
+    id: null,
+    tick: 0,
+  });
 
   // Panel visibility. Session-only by design: a fresh launch starts with
   // everything visible. Collapsing the details panel keeps the selection —
@@ -151,6 +68,57 @@ export default function App() {
     [nodes, selectedId],
   );
 
+  // A new snapshot prunes rather than resets: re-running discovery over one
+  // scope regenerates most ids identically, so throwing the open tree away
+  // would cost the user their place for nothing.
+  const prevNodes = useRef<GraphNode[]>(NO_NODES);
+  useEffect(() => {
+    if (nodes.length === 0) return;
+    const prev = prevNodes.current;
+    prevNodes.current = nodes;
+    setTree((cur) => {
+      if (prev.length > 0 && cur.rootId) return prune(prev, nodes, cur, null).state;
+      // First snapshot: open the cluster root so the namespaces are showing — a
+      // single collapsed card would be consistent and useless.
+      const root = nodes.find((n) => !n.parentId)?.id ?? nodes[0].id;
+      const seeded: TreeState = {
+        rootId: root,
+        expanded: new Set([root]),
+        expandedGroups: new Set<string>(),
+      };
+      // ?focus= is written on *every* click, so it is a restored selection, not
+      // a jump: reveal it inside the map rather than re-rooting on it. Rooting
+      // here stranded a reload on whatever card was last clicked — a leaf meant
+      // one card and an empty canvas. The k9s handoff is the thing that
+      // re-roots, and it arrives over IPC (see the focus effect below).
+      const focus = new URLSearchParams(window.location.search).get("focus");
+      return focus && nodes.some((n) => n.id === focus)
+        ? reveal(nodes, seeded, focus, false)
+        : seeded;
+    });
+    setSelectedId((cur) => (cur && nodes.some((n) => n.id === cur) ? cur : null));
+  }, [nodes]);
+
+  const visible = useMemo(() => visibleTree(nodes, tree), [nodes, tree]);
+  const relations = useMemo(
+    () => relate(nodes, allEdges, visible, selectedId),
+    [nodes, allEdges, visible, selectedId],
+  );
+  const outlines = useMemo(() => outlineColors(relations), [relations]);
+  const marks = useMemo(() => controllerMarks(nodes, allEdges), [nodes, allEdges]);
+  const childCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const n of nodes) {
+      if (!n.parentId) continue;
+      counts.set(n.parentId, (counts.get(n.parentId) ?? 0) + 1);
+    }
+    return counts;
+  }, [nodes]);
+  const rootParent = useMemo(() => {
+    const root = tree.rootId ? byId.get(tree.rootId) : undefined;
+    return root?.parentId ? byId.get(root.parentId) : undefined;
+  }, [tree.rootId, byId]);
+
   const select = (n: GraphNode | null) => {
     setSelectedId(n?.id ?? null);
     const url = new URL(window.location.href);
@@ -159,10 +127,35 @@ export default function App() {
     window.history.replaceState(null, "", url);
   };
 
-  const focus = useMemo(
-    () => focusSubgraph(nodes, allEdges, selected?.id ?? null),
-    [nodes, allEdges, selected],
-  );
+  // Structure-changing gestures. Each one is an explicit click, which is the
+  // only thing allowed to write expansion state.
+  const toggleNode = (id: string) => setTree((cur) => toggleExpand(nodes, cur, id, solo));
+  const toggleGroupCard = (gid: string) => setTree((cur) => toggleGroup(cur, gid));
+  const climb = () => setTree((cur) => showParent(nodes, cur));
+  // Picking from the sidebar tree names a node that may not be on screen, so it
+  // reveals: selection alone never changes what is visible.
+  // Taking the user to a related resource is a *reveal*, never a selection:
+  // selecting it would swap the relationship panel over to that resource and
+  // lose the context they were working through.
+  const goToRelated = (id: string) => {
+    setTree((cur) => reveal(nodes, cur, id, solo));
+    setRevealTick((t) => t + 1);
+    // Revealing can open several levels and re-frame the whole canvas, so say
+    // which card the click was about. The tick makes a repeat click on the same
+    // resource flag it again.
+    setSpotlight((cur) => ({ id, tick: cur.tick + 1 }));
+  };
+
+  const selectAndReveal = (n: GraphNode | null) => {
+    select(n);
+    if (!n) return;
+    setTree((cur) => reveal(nodes, cur, n.id, solo));
+    // A reveal can open several levels at once, so the target could land
+    // anywhere in a large layout. A sidebar pick has no on-screen origin to
+    // preserve, so it re-frames — unlike a click in the canvas, which must hold
+    // its position.
+    setRevealTick((t) => t + 1);
+  };
 
   // A jump-to-resource request from outside the app (the k9s plugin). Held in
   // a ref so the subscription is created once; writing it during render is
@@ -172,7 +165,15 @@ export default function App() {
   useEffect(() => {
     onFocusRef.current = (req) => {
       if (req.id) {
-        setSelectedId(req.id);
+        const id = req.id;
+        setSelectedId(id);
+        // Start *at* the resource with its children open; the ancestors are one
+        // "show parent" click away rather than drawn unasked.
+        setTree((cur) => ({
+          ...cur,
+          rootId: id,
+          expanded: new Set([...cur.expanded, id]),
+        }));
         const url = new URL(window.location.href);
         url.searchParams.set("focus", req.id);
         window.history.replaceState(null, "", url);
@@ -211,7 +212,7 @@ export default function App() {
             <TreePanel
               nodes={nodes}
               selectedId={selected?.id ?? null}
-              onSelect={select}
+              onSelect={selectAndReveal}
             />
           </aside>
         )}
@@ -288,10 +289,23 @@ export default function App() {
           )}
           {snapshot && (
             <GraphCanvas
-              nodes={focus.nodes}
-              edges={focus.edges}
-              hiddenCounts={focus.hidden}
+              visible={visible}
+              relations={relations}
+              outlines={outlines}
+              expanded={tree.expanded}
+              childCounts={childCounts}
+              marks={marks}
+              canShowParent={!!rootParent}
+              parentLabel={rootParent?.name}
               selectedId={selected?.id ?? null}
+              solo={solo}
+              onToggleSolo={() => setSolo((v) => !v)}
+              onToggleExpand={toggleNode}
+              onToggleGroup={toggleGroupCard}
+              onShowParent={climb}
+              onGoToRelated={goToRelated}
+              spotlight={spotlight}
+              revealTick={revealTick}
               onSelect={select}
             />
           )}
