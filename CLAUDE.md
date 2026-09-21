@@ -49,7 +49,9 @@
   namespace, a different cluster replaces, unmapped kinds and unknown namespaces refuse.
   `Scope.CRDKinds` narrows a custom-resource pass to the one kind being hunted — CRs are
   listed cluster-wide once per CRD and filtered in-process, so a namespace scope saves
-  nothing and a full sweep costs ~90s.
+  nothing. Measured on dev/ci1, one namespace: full sweep 36.4s / 5,848 nodes, narrowed
+  3.3s / 21 nodes — 11x, and the full sweep alone would have exceeded the old 30s refresh
+  cap this branch raised.
 - Anything that calls `wruntime.EventsEmit` is **untestable in Go**: `getEvents` calls
   `log.Fatalf` on a context without Wails' event plumbing, taking the test binary with it.
   Keep decision logic in pure functions (`focusResult`, `discoveryScope`) and let the thin
