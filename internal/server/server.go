@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/purplespacecat/kscope/internal/graph"
 	"github.com/purplespacecat/kscope/web"
@@ -19,18 +18,27 @@ type Server struct {
 	mux   *http.ServeMux
 	store *graph.Store
 
+	// runner serialises discovery and owns the write to the store, so the
+	// HTTP path and anything else that triggers a pass cannot race each other.
+	runner *graph.Runner
+
 	// Indirection points for the cluster-touching calls, so handler tests can
 	// swap in deterministic fakes instead of needing a live kubeconfig.
-	discover       func(context.Context, graph.Scope) (graph.Snapshot, error)
 	listNamespaces func(context.Context, string) ([]string, error)
 	listContexts   func() ([]graph.KubeContext, error)
+}
+
+// setDiscover swaps the discovery function behind the runner. Test seam: the
+// runner is built in New so callers never have to assemble one.
+func (s *Server) setDiscover(store *graph.Store, discover func(context.Context, graph.Scope) (graph.Snapshot, error)) {
+	s.runner = graph.NewRunnerFunc(store, discover)
 }
 
 func New(store *graph.Store) *Server {
 	s := &Server{
 		mux:            http.NewServeMux(),
 		store:          store,
-		discover:       graph.Discover,
+		runner:         graph.NewRunner(store),
 		listNamespaces: graph.ListNamespaces,
 		listContexts:   graph.ListContexts,
 	}
@@ -153,19 +161,23 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	// An empty namespace list is valid: it means "every namespace" (spec §3).
 
-	// Bound discovery so a slow pass doesn't hold the request forever.
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// Bound discovery so a slow pass doesn't hold the request forever. The
+	// ceiling lives in graph next to the runner: it applies to a pass, not to
+	// this transport, and the 30s it replaced was below a measured real pass.
+	ctx, cancel := context.WithTimeout(r.Context(), graph.DefaultDiscoveryTimeout)
 	defer cancel()
 
-	snap, err := s.discover(ctx, scope)
+	snap, err := s.runner.Run(ctx, scope)
+	if errors.Is(err, graph.ErrBusy) {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := s.store.Set(snap); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
+	// No store.Set here: the runner owns that write, so a pass is stored
+	// exactly once whichever caller started it.
 	writeJSON(w, http.StatusOK, snap)
 }
 

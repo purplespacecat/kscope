@@ -172,10 +172,15 @@ func (s *Store) hydrateManifests() error {
 
 // Set replaces the snapshot and atomically writes both files to disk.
 func (s *Store) Set(snap Snapshot) error {
+	// The lock is held across BOTH writes, not just the in-memory swap. Two
+	// overlapping passes that interleave here leave latest.json from one
+	// snapshot beside manifests.json from another — a mismatch that survives a
+	// restart and 404s /api/node/manifest/{id} for a node the graph lists.
+	// Readers pay a marshal plus two writes of wait; a torn pair costs more.
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.snap = &snap
 	s.manifestsLoaded = true
-	s.mu.Unlock()
 
 	graphJSON, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {

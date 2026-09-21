@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 	dir := t.TempDir()
 	store := graph.NewStore(filepath.Join(dir, "latest.json"))
 	srv := New(store)
-	srv.discover = fakeDiscover
+	srv.setDiscover(store, fakeDiscover)
 	srv.listNamespaces = func(context.Context, string) ([]string, error) {
 		return []string{"default", "kube-system"}, nil
 	}
@@ -224,12 +225,12 @@ func TestNamespaces_NoContextMeansCurrent(t *testing.T) {
 // Scope.Context has to survive the JSON round-trip into discovery, otherwise
 // the picker would silently discover the wrong cluster.
 func TestRefresh_ForwardsContextInScope(t *testing.T) {
-	srv, _ := newTestServer(t)
+	srv, dir := newTestServer(t)
 	var got graph.Scope
-	srv.discover = func(ctx context.Context, scope graph.Scope) (graph.Snapshot, error) {
+	srv.setDiscover(graph.NewStore(filepath.Join(dir, "latest.json")), func(ctx context.Context, scope graph.Scope) (graph.Snapshot, error) {
 		got = scope
 		return fakeDiscover(ctx, scope)
-	}
+	})
 
 	body := bytes.NewBufferString(`{"context":"staging","namespaces":["default"]}`)
 	rr := httptest.NewRecorder()
@@ -261,4 +262,34 @@ func TestNamespaces_Lists(t *testing.T) {
 	if len(body.Namespaces) == 0 {
 		t.Fatalf("expected namespaces, got none")
 	}
+}
+
+// Discovery is serialised: a pass can take minutes, so a second request is told
+// to try again rather than queued behind work it did not ask for. Without this
+// both passes run and both write the store, and the client keeps whichever
+// snapshot it happened to receive.
+func TestRefresh_ConcurrentPassIsRefused(t *testing.T) {
+	srv, dir := newTestServer(t)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	srv.setDiscover(graph.NewStore(filepath.Join(dir, "latest.json")), func(ctx context.Context, scope graph.Scope) (graph.Snapshot, error) {
+		close(started)
+		<-release
+		return fakeDiscover(ctx, scope)
+	})
+
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/graph/refresh", strings.NewReader(`{"namespaces":["default"]}`))
+		srv.Mux().ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	<-started
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/graph/refresh", strings.NewReader(`{"namespaces":["default"]}`))
+	srv.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	close(release)
 }
