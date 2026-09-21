@@ -40,6 +40,26 @@
   `toggleExpand`, never read by `visibleTree`; if it ever leaks into the derivation,
   turning it off would resurrect branches. Spec in the vault
   (`specs/2026-09-17-kscope-org-chart-view.md`).
+- The k9s handoff **discovers what it cannot find**. `cmd/kscope-desktop/focus.go` resolves
+  against the snapshot and, on a miss, emits the `graph.Scope` that would contain the
+  resource; the frontend runs that pass and then resolves the id through
+  `GET /api/focus/resolve`, so `graph.ResolveNode` stays the only implementation of "this
+  resource". The policy is `discoveryScope`, deliberately **pure** so it is a table test
+  rather than something you learn by pressing a key at a cluster: same cluster adds a
+  namespace, a different cluster replaces, unmapped kinds and unknown namespaces refuse.
+  `Scope.CRDKinds` narrows a custom-resource pass to the one kind being hunted — CRs are
+  listed cluster-wide once per CRD and filtered in-process, so a namespace scope saves
+  nothing and a full sweep costs ~90s.
+- Anything that calls `wruntime.EventsEmit` is **untestable in Go**: `getEvents` calls
+  `log.Fatalf` on a context without Wails' event plumbing, taking the test binary with it.
+  Keep decision logic in pure functions (`focusResult`, `discoveryScope`) and let the thin
+  shell emit.
+- k9s substitution, measured against v0.50.6 with a pty probe (the house rule is that
+  appearing to work is not proof): in an all-namespaces view `$NAMESPACE` carries the
+  **selected row's** namespace, not the literal `all`, and `$COL-NAMESPACE` carries the same.
+  kscope keeps the `all`/`*` sentinel handling anyway and takes `--focus-row-namespace` as a
+  fallback, because that behaviour is k9s's to change and the cost of being wrong is a
+  cluster-wide pass.
 - `internal/graph/view.go` is a **pure** projection (snapshot + focus → text): no I/O, no
   clock, no flags. Its byte budget is a hard cap — if you change what `emit` writes, change
   what `measure` prices, or the guarantee silently breaks.

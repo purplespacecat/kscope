@@ -28,6 +28,7 @@ func TestParseFocusArgs_K9sInvocation(t *testing.T) {
 	args := []string{
 		"--focus-context", "default",
 		"--focus-namespace", "cert-manager",
+		"--focus-row-namespace", "cert-manager",
 		"--focus-kind", "deployments",
 		"--focus-name", "cert-manager-webhook",
 	}

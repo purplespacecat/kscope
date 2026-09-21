@@ -102,10 +102,26 @@ existing `plugins:` key instead — appending the whole file would produce two
 top-level `plugins:` keys and invalid YAML.
 
 Then in k9s, put the cursor on any resource and press `Ctrl-T`: the kscope
-window raises focused on that resource. If it isn't in the current snapshot
-(different cluster, namespace out of scope), kscope says so in a banner instead
-of silently doing nothing. kscope keeps a single window — a second launch hands
-its arguments to the running instance and exits.
+window raises focused on that resource. kscope keeps a single window — a second
+launch hands its arguments to the running instance and exits.
+
+**If the resource isn't in the current snapshot, kscope goes and gets it.** It
+discovers the scope that would contain it and lands on it, showing what it is
+doing and what that replaces, with a Cancel:
+
+- **same cluster, a namespace you hadn't scoped in** — the namespace is *added*
+  to the current scope, so the map you were looking at survives.
+- **a different cluster** — the snapshot is replaced, since namespace names
+  don't carry across clusters. A "← Back to …" button restores the scope that
+  produced the previous map.
+- **a custom resource** — discovery is narrowed to that one CRD. Sweeping every
+  CRD on a Crossplane-sized cluster takes ~90s; asking for one takes seconds.
+- **a kind kscope doesn't model** (Endpoints, Roles, HPAs) or a request that
+  never said which namespace — no pass at all, and it says why. Discovering
+  could not have helped.
+
+A failed pass never costs you the map you had: the snapshot is stored only on
+success.
 
 The same handoff works from any tool that can run a command:
 
