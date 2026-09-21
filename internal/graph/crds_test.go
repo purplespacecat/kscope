@@ -271,3 +271,89 @@ func TestConditionHealth_DialectCascade(t *testing.T) {
 		t.Fatalf("Ready=False must outrank Available=True, got %s", got)
 	}
 }
+
+// withWidgets registers the extra fixture kind these tests use, without
+// changing the shared map every other CRD test relies on.
+func withWidgets() map[schema.GroupVersionResource]string {
+	out := map[schema.GroupVersionResource]string{}
+	for k, v := range crdListKinds {
+		out[k] = v
+	}
+	out[schema.GroupVersionResource{Group: "example.com", Version: "v1", Resource: "widgets"}] = "WidgetList"
+	return out
+}
+
+// Custom resources are listed cluster-wide, one call per CRD, and filtered to
+// the scope in-process — so narrowing the namespace does nothing for the cost.
+// A handoff that only needs ONE kind can say so, which is the difference
+// between a single list and a sweep of every CRD on a Crossplane cluster.
+func TestCRDs_CRDKindsListsOnlyWhatWasAskedFor(t *testing.T) {
+	cs := fake.NewClientset(activeNamespace("app"))
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(), withWidgets(),
+		fixtureCRD("certificates", "cert-manager.io", "Certificate", "Namespaced"),
+		fixtureCRD("widgets", "example.com", "Widget", "Namespaced"),
+		fixtureCR("cert-manager.io", "v1", "Certificate", "app", "web-tls", true),
+		fixtureCR("example.com", "v1", "Widget", "app", "sprocket", true),
+	)
+
+	snap, err := discover(context.Background(), cs, dyn, ClusterMeta{},
+		Scope{Namespaces: []string{"app"}, IncludeCRDs: true, CRDKinds: []string{"certificates"}})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	byID := indexByID(t, snap)
+
+	if _, ok := byID["cert-manager.io/certificate/app/web-tls"]; !ok {
+		t.Fatal("the requested kind must still be discovered")
+	}
+	if _, ok := byID["example.com/widget/app/sprocket"]; ok {
+		t.Fatal("a kind nobody asked for was listed anyway — the filter did nothing")
+	}
+	// Its definition should not be dragged in either.
+	if _, ok := byID["apiextensions.k8s.io/customresourcedefinition/widgets.example.com"]; ok {
+		t.Fatal("unrequested CRD definition became a node")
+	}
+}
+
+// The hint arrives from k9s as a plural, but a hand-typed --focus-kind is
+// usually the Kind. Both have to select the same CRD.
+func TestCRDs_CRDKindsAcceptsTheSingularKind(t *testing.T) {
+	cs := fake.NewClientset(activeNamespace("app"))
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(), crdListKinds,
+		fixtureCRD("certificates", "cert-manager.io", "Certificate", "Namespaced"),
+		fixtureCR("cert-manager.io", "v1", "Certificate", "app", "web-tls", true),
+	)
+
+	snap, err := discover(context.Background(), cs, dyn, ClusterMeta{},
+		Scope{Namespaces: []string{"app"}, IncludeCRDs: true, CRDKinds: []string{"Certificate"}})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if _, ok := indexByID(t, snap)["cert-manager.io/certificate/app/web-tls"]; !ok {
+		t.Fatal("singular Kind hint should select the same CRD as its plural")
+	}
+}
+
+// An empty CRDKinds keeps the old behaviour: everything.
+func TestCRDs_EmptyCRDKindsListsEverything(t *testing.T) {
+	cs := fake.NewClientset(activeNamespace("app"))
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(), withWidgets(),
+		fixtureCRD("certificates", "cert-manager.io", "Certificate", "Namespaced"),
+		fixtureCRD("widgets", "example.com", "Widget", "Namespaced"),
+		fixtureCR("cert-manager.io", "v1", "Certificate", "app", "web-tls", true),
+		fixtureCR("example.com", "v1", "Widget", "app", "sprocket", true),
+	)
+
+	snap, err := discover(context.Background(), cs, dyn, ClusterMeta{},
+		Scope{Namespaces: []string{"app"}, IncludeCRDs: true})
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	byID := indexByID(t, snap)
+	if _, ok := byID["example.com/widget/app/sprocket"]; !ok {
+		t.Fatal("without CRDKinds every CRD should still be listed")
+	}
+}

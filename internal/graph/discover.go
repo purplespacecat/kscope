@@ -162,7 +162,7 @@ func discover(ctx context.Context, cs kubernetes.Interface, dyn dynamic.Interfac
 
 	// Generic custom resources (spec §8.5): every other CRD's instances.
 	if scope.IncludeCRDs {
-		b.customResources(ctx, dyn, wanted)
+		b.customResources(ctx, dyn, wanted, scope.CRDKinds)
 	}
 
 	// Cluster-scoped storage is listed once but NOT pushed wholesale — only

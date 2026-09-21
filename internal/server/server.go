@@ -47,6 +47,7 @@ func New(store *graph.Store) *Server {
 	s.mux.HandleFunc("GET /api/namespaces", s.handleNamespaces)
 	s.mux.HandleFunc("GET /api/graph/latest", s.handleLatest)
 	s.mux.HandleFunc("POST /api/graph/refresh", s.handleRefresh)
+	s.mux.HandleFunc("GET /api/focus/resolve", s.handleResolve)
 	// Node IDs contain slashes ("apps/deployment/ns/name"), so the id is a
 	// trailing path wildcard rather than a single segment.
 	s.mux.HandleFunc("GET /api/node/manifest/{id...}", s.handleManifest)
@@ -179,6 +180,35 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// No store.Set here: the runner owns that write, so a pass is stored
 	// exactly once whichever caller started it.
 	writeJSON(w, http.StatusOK, snap)
+}
+
+// handleResolve turns a name (plus optional namespace and kind) into a node ID
+// in the current snapshot. It exists for the k9s handoff: after a pass, the
+// caller has a fresh snapshot but only the reference k9s gave it. Reusing
+// graph.ResolveNode keeps one implementation of what "this resource" means —
+// its tie-breaking is subtle enough that a second copy would drift.
+func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	ref := graph.NodeRef{
+		Namespace: q.Get("namespace"),
+		Name:      q.Get("name"),
+		Kind:      q.Get("kind"),
+	}
+	if ref.Name == "" {
+		writeError(w, http.StatusBadRequest, errors.New("name is required"))
+		return
+	}
+	snap, err := s.store.Get()
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	id, ok := graph.ResolveNode(snap.Nodes, ref)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("no node matching %q", ref.Name))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

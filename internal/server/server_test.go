@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,4 +293,60 @@ func TestRefresh_ConcurrentPassIsRefused(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusConflict, rec.Body.String())
 	}
 	close(release)
+}
+
+// After a handoff-triggered pass the frontend has a new snapshot but only a
+// name/namespace/kind to find it by. This endpoint reuses graph.ResolveNode so
+// the rule lives in one place rather than being reimplemented in TypeScript.
+func TestResolve(t *testing.T) {
+	srv, _ := newTestServer(t)
+	rr := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/graph/refresh",
+		strings.NewReader(`{"namespaces":["default"]}`)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("seed refresh: %d %s", rr.Code, rr.Body.String())
+	}
+
+	snap, err := srv.store.Get()
+	if err != nil || len(snap.Nodes) == 0 {
+		t.Fatalf("seeded store empty: %v", err)
+	}
+	want := snap.Nodes[len(snap.Nodes)-1]
+
+	t.Run("finds a node by name", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		q := "/api/focus/resolve?name=" + url.QueryEscape(want.Name)
+		if want.Namespace != "" {
+			q += "&namespace=" + url.QueryEscape(want.Namespace)
+		}
+		srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, q, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d (%s)", rec.Code, rec.Body.String())
+		}
+		var got struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.ID != want.ID {
+			t.Fatalf("id = %q, want %q", got.ID, want.ID)
+		}
+	})
+
+	t.Run("404 when the snapshot does not have it", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/focus/resolve?name=nope", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("400 without a name", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/focus/resolve", nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	})
 }
