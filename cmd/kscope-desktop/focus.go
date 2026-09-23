@@ -210,12 +210,18 @@ func focusResult(snap graph.Snapshot, haveSnapshot bool, f focusFlags) focusPayl
 	p := focusPayload{Namespace: ref.Namespace, Name: f.name, Kind: f.kind}
 
 	if haveSnapshot {
-		if id, ok := graph.ResolveNode(snap.Nodes, ref); ok {
-			p.Phase = phaseResolved
-			p.ID = id
-			return p
-		}
-		if f.context != "" && f.context != snap.Cluster.Context {
+		// A snapshot of another cluster cannot contain the resource, whatever
+		// names it happens to share: crossplane-system exists everywhere, and
+		// resolving it against the map on screen was a "hit" on the wrong
+		// cluster that never ran the pass the keypress was for.
+		otherCluster := f.context != "" && f.context != snap.Cluster.Context
+		if !otherCluster {
+			if id, ok := graph.ResolveNode(snap.Nodes, ref); ok {
+				p.Phase = phaseResolved
+				p.ID = id
+				return p
+			}
+		} else {
 			p.Context = f.context
 		}
 	}

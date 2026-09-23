@@ -471,3 +471,32 @@ func TestFocusResult_NamespaceRowFromK9s(t *testing.T) {
 		t.Fatalf("payload namespace = %q, want empty", got.Namespace)
 	}
 }
+
+// A name that exists on the cluster on screen says nothing about the cluster
+// that was asked for. Namespaces like crossplane-system or kube-system exist
+// everywhere, so resolving before checking the context turned every
+// cross-cluster handoff on one of them into a silent "hit" on the wrong map —
+// and no discovery ever ran. Observed with a dev/ci1 snapshot and a k9s row in
+// prod/prod1.
+func TestFocusResult_ANameOnAnotherClusterIsNotAHit(t *testing.T) {
+	nsNode := graph.Node{ID: "core/namespace/crossplane-system", Kind: "Namespace", Name: "crossplane-system"}
+	f := focusFlags{context: "prod/prod1", namespace: "-", rowNamespace: "$COL-NAMESPACE", kind: "namespaces", name: "crossplane-system"}
+
+	got := focusResult(snapWith("dev/ci1", nsNode), true, f)
+	if got.Phase != phaseMissing {
+		t.Fatalf("phase = %q, want a miss: the snapshot is from another cluster", got.Phase)
+	}
+	if got.Context != "prod/prod1" {
+		t.Errorf("payload context = %q, want the requested cluster", got.Context)
+	}
+	if got.Scope == nil || got.Scope.Context != "prod/prod1" || !slices.Equal(got.Scope.Namespaces, []string{"crossplane-system"}) {
+		t.Fatalf("scope = %+v, want a fresh pass on prod/prod1 for that namespace", got.Scope)
+	}
+
+	// The same request against a snapshot of the right cluster is a plain hit.
+	same := f
+	same.context = "dev/ci1"
+	if got := focusResult(snapWith("dev/ci1", nsNode), true, same); got.Phase != phaseResolved {
+		t.Fatalf("same cluster: phase = %q, want resolved", got.Phase)
+	}
+}
