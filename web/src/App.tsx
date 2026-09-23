@@ -4,13 +4,15 @@ import { ScopePanel } from "./components/ScopePanel";
 import { TreePanel } from "./components/TreePanel";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { DetailsPanel } from "./components/DetailsPanel";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLatest } from "./hooks/useGraph";
+import * as api from "./api/client";
 import {
   DESKTOP_EVENTS,
   onDesktopData,
   type FocusRequest,
 } from "./lib/desktop";
-import type { GraphEdge, GraphNode } from "./types/graph";
+import type { GraphEdge, GraphNode, Scope } from "./types/graph";
 import {
   controllerMarks,
   outlineColors,
@@ -30,6 +32,7 @@ const NO_EDGES: GraphEdge[] = [];
 
 export default function App() {
   const { data: snapshot, isLoading, error } = useLatest();
+  const qc = useQueryClient();
   // Selection is stored as an id, seeded from ?focus= so any view is a
   // shareable URL; the node object is derived from the current snapshot, so
   // selection survives snapshot refreshes when the resource still exists.
@@ -161,34 +164,86 @@ export default function App() {
   // a ref so the subscription is created once; writing it during render is
   // what the refs lint rule forbids.
   const [notice, setNotice] = useState<string | null>(null);
+  // What a handoff is currently discovering, if anything. Also the guard: a
+  // second keypress must not stack another pass on top of a running one.
+  const [hopping, setHopping] = useState<{ scope: Scope; from: string } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  // The scope that produced the map a cross-cluster hop replaced, so the user
+  // can get back. Only the scope — a snapshot copy would hold its manifests,
+  // which are the large part, to serve an undo used once in a while.
+  const [replaced, setReplaced] = useState<{ scope: Scope; context: string } | null>(null);
+
+  const land = (id: string) => {
+    setSelectedId(id);
+    // Start *at* the resource with its children open; the ancestors are one
+    // "show parent" click away rather than drawn unasked.
+    setTree((cur) => ({ ...cur, rootId: id, expanded: new Set([...cur.expanded, id]) }));
+    const url = new URL(window.location.href);
+    url.searchParams.set("focus", id);
+    window.history.replaceState(null, "", url);
+  };
+
   const onFocusRef = useRef<(r: FocusRequest) => void>(() => {});
   useEffect(() => {
     onFocusRef.current = (req) => {
       if (req.id) {
-        const id = req.id;
-        setSelectedId(id);
-        // Start *at* the resource with its children open; the ancestors are one
-        // "show parent" click away rather than drawn unasked.
-        setTree((cur) => ({
-          ...cur,
-          rootId: id,
-          expanded: new Set([...cur.expanded, id]),
-        }));
-        const url = new URL(window.location.href);
-        url.searchParams.set("focus", req.id);
-        window.history.replaceState(null, "", url);
+        land(req.id);
         setNotice(null);
         return;
       }
-      // Not in this snapshot. Saying so beats looking like the keystroke was
-      // swallowed; the user's fix is to widen the scope and re-run discovery.
       const qualified = req.namespace ? `${req.namespace}/${req.name}` : req.name;
       const what = req.kind ? `${req.kind} ${qualified}` : qualified;
-      setNotice(
-        req.context
-          ? `${what} is in context "${req.context}", but this snapshot is from "${snapshot?.cluster?.context ?? "another cluster"}".`
-          : `${what} isn't in this snapshot — run discovery including its namespace.`,
-      );
+
+      // Nothing to discover: say why, rather than spending minutes of cluster
+      // reads to arrive at the same answer.
+      if (!req.scope) {
+        setNotice(
+          req.reason === "unmapped"
+            ? `kscope does not map ${req.kind ?? "that kind"} — there is nothing to jump to.`
+            : `${what}: k9s didn't say which namespace. Press Ctrl-T from a namespaced view.`,
+        );
+        return;
+      }
+      // One pass at a time. A held key would otherwise queue a cluster
+      // enumeration per repeat.
+      if (abortRef.current) return;
+
+      const scope = req.scope;
+      const from = snapshot?.cluster?.context ?? "";
+      // Only a different cluster loses you anything: a same-cluster hop adds a
+      // namespace to the scope rather than replacing it.
+      const losing =
+        from && scope.context && scope.context !== from && snapshot
+          ? { scope: snapshot.scope, context: from }
+          : null;
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      setNotice(null);
+      setHopping({ scope, from });
+
+      void api
+        .refresh(scope, ctrl.signal)
+        .then(async (snap) => {
+          qc.setQueryData(["graph", "latest"], snap);
+          // Resolve against the snapshot we just stored. Server-side, so the
+          // tie-breaking rules are the same ones the handoff used.
+          const id = await api.resolveFocus({
+            name: req.name ?? "",
+            namespace: req.namespace,
+            kind: req.kind,
+          });
+          setReplaced(losing);
+          if (id) land(id);
+          else setNotice(`Discovered ${scope.namespaces.join(", ")}, but ${what} is not in it.`);
+        })
+        .catch((e: Error) => {
+          if (ctrl.signal.aborted) return;
+          setNotice(`Couldn't discover ${scope.context || "that cluster"}: ${e.message}`);
+        })
+        .finally(() => {
+          abortRef.current = null;
+          setHopping(null);
+        });
     };
   });
   useEffect(
@@ -249,8 +304,72 @@ export default function App() {
               </svg>
             </button>
           )}
-          {notice && (
-            <div className="absolute inset-x-0 top-0 z-20 flex items-start gap-3 bg-amber-100 px-4 py-2 text-xs text-amber-900">
+          {!hopping && replaced && (
+        <div className="absolute inset-x-0 top-0 z-20 flex items-center gap-3 bg-slate-100 px-4 py-2 text-xs text-slate-700">
+          <span className="flex-1">
+            Showing <strong>{snapshot?.cluster?.context}</strong>.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              const target = replaced;
+              setReplaced(null);
+              setHopping({ scope: target.scope, from: snapshot?.cluster?.context ?? "" });
+              const ctrl = new AbortController();
+              abortRef.current = ctrl;
+              void api
+                .refresh(target.scope, ctrl.signal)
+                .then((snap) => qc.setQueryData(["graph", "latest"], snap))
+                .catch((e: Error) => {
+                  if (!ctrl.signal.aborted) setNotice(`Couldn't go back: ${e.message}`);
+                })
+                .finally(() => {
+                  abortRef.current = null;
+                  setHopping(null);
+                });
+            }}
+            className="shrink-0 rounded border border-slate-300 bg-white px-2 py-0.5 font-medium hover:bg-slate-50"
+          >
+            ← Back to {replaced.context}
+            {replaced.scope.namespaces.length > 0 &&
+              ` (${replaced.scope.namespaces.length} namespace${replaced.scope.namespaces.length === 1 ? "" : "s"})`}
+          </button>
+        </div>
+      )}
+      {hopping && (
+        <div
+          role="status"
+          className="absolute inset-x-0 top-0 z-30 flex items-center gap-3 bg-sky-100 px-4 py-2 text-xs text-sky-900"
+        >
+          <span
+            aria-hidden
+            className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-sky-300 border-t-sky-700"
+          />
+          <span className="flex-1">
+            Discovering <strong>{hopping.scope.context || "current context"}</strong>
+            {hopping.scope.namespaces.length > 0 && <> · {hopping.scope.namespaces.join(", ")}</>}
+            {hopping.from && hopping.from !== hopping.scope.context && (
+              <> — this replaces the current map of <strong>{hopping.from}</strong>.</>
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              abortRef.current?.abort();
+              abortRef.current = null;
+              setHopping(null);
+            }}
+            className="shrink-0 font-medium underline"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+      {notice && (
+            <div
+          role="status"
+          className="absolute inset-x-0 top-0 z-20 flex items-start gap-3 bg-amber-100 px-4 py-2 text-xs text-amber-900"
+        >
               <span className="flex-1">{notice}</span>
               <button
                 type="button"

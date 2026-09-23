@@ -18,6 +18,13 @@ type Scope struct {
 	// IncludeCRDs adds generic custom-resource discovery: every CRD's
 	// in-scope instances with instance-of edges back to the definition.
 	IncludeCRDs bool `json:"includeCRDs,omitempty"`
+	// CRDKinds narrows that sweep to the named kinds, as a Kind or a plural
+	// resource name. Empty means every CRD, which is the default and the
+	// expensive one: instances are listed cluster-wide once per CRD and
+	// filtered in-process, so the namespace scope does nothing for the cost.
+	// A caller that knows which kind it is looking for — the k9s handoff does —
+	// turns a sweep of every CRD into a single list.
+	CRDKinds []string `json:"crdKinds,omitempty"`
 }
 
 // Health is a coarse rollup of an object's status, computed at discovery time

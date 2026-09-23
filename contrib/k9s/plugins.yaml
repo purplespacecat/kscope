@@ -45,6 +45,20 @@ plugins:
       - $CONTEXT
       - --focus-namespace
       - $NAMESPACE
+      # The selected row's own namespace. Belt and braces: kscope needs a real
+      # namespace to scope a discovery to, and "all" would mean enumerating the
+      # entire cluster from a keystroke, which it refuses to do.
+      #
+      # Measured against k9s v0.50.6 by driving it in a pty and echoing the
+      # substituted args (both views, first row selected):
+      #   k9s -c pods -A          -> NAMESPACE=[aws-system]  COL-NAMESPACE=[aws-system]
+      #   k9s -c pods -n kube-system -> NAMESPACE=[kube-system] COL-NAMESPACE=[kube-system]
+      # So $NAMESPACE already carries the ROW's namespace in an all-namespaces
+      # view rather than the literal "all" — but kscope keeps the sentinel
+      # handling and takes this as a fallback, because that behaviour is k9s's
+      # to change and the cost of being wrong is a cluster-wide pass.
+      - --focus-row-namespace
+      - $COL-NAMESPACE
       - --focus-kind
       - $RESOURCE_NAME
       - --focus-name

@@ -1,3 +1,4 @@
+import type { Scope } from "../types/graph";
 // Adapter over the Wails desktop shell.
 //
 // Wails injects `window.runtime` and `window.go.<pkg>.<Struct>` into the
@@ -50,13 +51,19 @@ export const DESKTOP_EVENTS = {
  * case the payload carries enough to explain why.
  */
 export interface FocusRequest {
+  /** "resolved" when the node is already in the snapshot, else "missing". */
+  phase?: "resolved" | "missing";
   id?: string;
-  missing?: boolean;
+  /** Resolved namespace — never k9s's raw "all" sentinel. */
   namespace?: string;
   name?: string;
   kind?: string;
   /** Set when the request named a cluster other than the snapshot's. */
   context?: string;
+  /** Why a miss is not worth discovering for: "unmapped" | "no-namespace". */
+  reason?: string;
+  /** The pass that would bring this resource into view; absent when none would. */
+  scope?: Scope;
 }
 
 /** Like onDesktopEvent, but for events that carry a payload. */

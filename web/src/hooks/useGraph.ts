@@ -50,7 +50,9 @@ export function useManifest(id: string | null, snapshotTs: string | undefined) {
 export function useRefresh() {
   const qc = useQueryClient();
   return useMutation<Snapshot, Error, Scope>({
-    mutationFn: api.refresh,
+    // Wrapped rather than passed directly: react-query hands the mutation fn
+    // its own context as a second argument, which is not an AbortSignal.
+    mutationFn: (scope: Scope) => api.refresh(scope),
     onSuccess: (snap) => {
       // Write straight to the cache instead of invalidating + re-fetching:
       // we already have the new snapshot in-hand.

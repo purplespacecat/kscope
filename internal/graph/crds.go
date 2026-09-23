@@ -28,7 +28,7 @@ const crdGroupID = "crds"
 // namespace), filtered to the scope in-process — 40 CRDs means 40 calls, not
 // 40×N. Only CRDs with at least one in-scope instance become nodes, mirroring
 // the PV/StorageClass pruning: a namespaced invocation stays lean.
-func (b *builder) customResources(ctx context.Context, dyn dynamic.Interface, wanted map[string]bool) {
+func (b *builder) customResources(ctx context.Context, dyn dynamic.Interface, wanted map[string]bool, kinds []string) {
 	if dyn == nil {
 		return // tests without a dynamic client
 	}
@@ -52,6 +52,13 @@ func (b *builder) customResources(ctx context.Context, dyn dynamic.Interface, wa
 		scopeStr, _, _ := unstructured.NestedString(crd.Object, "spec", "scope")
 		version := servedVersion(crd)
 		if group == "" || kind == "" || plural == "" || version == "" {
+			continue
+		}
+
+		// Skip the list entirely for kinds the caller did not ask about. This
+		// is the whole saving: the cost here is one cluster-wide list per CRD,
+		// and a Crossplane cluster has hundreds.
+		if len(kinds) > 0 && !matchesAnyKind(kinds, kind, plural) {
 			continue
 		}
 
@@ -248,4 +255,15 @@ func suffixConditionHealth(conds []any) Health {
 		return HealthUnknown
 	}
 	return worst
+}
+
+// matchesAnyKind reports whether a CRD's Kind or plural is among the hints,
+// which may themselves be either form.
+func matchesAnyKind(hints []string, kind, plural string) bool {
+	for _, h := range hints {
+		if KindMatches(kind, h) || strings.EqualFold(plural, h) {
+			return true
+		}
+	}
+	return false
 }

@@ -96,7 +96,7 @@ func main() {
 		},
 		// Focus requested on the command line that started the app. This runs
 		// after the frontend has loaded, so its event subscription is live.
-		OnDomReady: func(context.Context) { app.focus(*focus) },
+		OnDomReady:    func(context.Context) { app.focus(*focus) },
 		OnBeforeClose: app.beforeClose,
 	})
 	if err != nil {

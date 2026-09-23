@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/purplespacecat/kscope/internal/graph"
@@ -27,6 +28,7 @@ func TestParseFocusArgs_K9sInvocation(t *testing.T) {
 	args := []string{
 		"--focus-context", "default",
 		"--focus-namespace", "cert-manager",
+		"--focus-row-namespace", "cert-manager",
 		"--focus-kind", "deployments",
 		"--focus-name", "cert-manager-webhook",
 	}
@@ -74,4 +76,238 @@ func TestParseFocusArgs_UnknownFlagIsAnError(t *testing.T) {
 	if _, err := parseFocusArgs([]string{"--not-a-flag"}); err == nil {
 		t.Fatal("expected an error for an unknown flag")
 	}
+}
+
+func flags(ctx, ns, kind, name string) focusFlags {
+	return focusFlags{context: ctx, namespace: ns, kind: kind, name: name}
+}
+
+// targetNamespace decides what a pass should be scoped to. k9s substitutes
+// $NAMESPACE literally, so its all-namespaces view sends "all" — right for
+// *resolving* (search everywhere), useless for *scoping*, and catastrophic if
+// taken as "discover the whole cluster" from a keystroke.
+func TestTargetNamespace(t *testing.T) {
+	tests := []struct {
+		name   string
+		f      focusFlags
+		want   string
+		wantOK bool
+	}{
+		{"plain namespace", flags("", "payments", "pods", "api"), "payments", true},
+		{"all with no row hint", flags("", "all", "pods", "api"), "", false},
+		{"star with no row hint", flags("", "*", "pods", "api"), "", false},
+		{"empty with no row hint", flags("", "", "pods", "api"), "", false},
+		{
+			"all, row hint supplies it",
+			focusFlags{namespace: "all", rowNamespace: "payments", kind: "pods", name: "api"},
+			"payments", true,
+		},
+		{
+			// k9s leaves the token untouched when the view has no such column.
+			"row hint arrived unsubstituted",
+			focusFlags{namespace: "all", rowNamespace: "$COL-NAMESPACE", kind: "pods", name: "api"},
+			"", false,
+		},
+		{
+			"row hint is not a label",
+			focusFlags{namespace: "all", rowNamespace: "not a namespace", kind: "pods", name: "api"},
+			"", false,
+		},
+		{
+			// A real namespace wins; the column is only a fallback.
+			"row hint ignored when the primary is real",
+			focusFlags{namespace: "payments", rowNamespace: "other", kind: "pods", name: "api"},
+			"payments", true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := tc.f.targetNamespace()
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("targetNamespace() = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// The whole policy for "what should one handoff discover", in one pure place.
+func TestDiscoveryScope(t *testing.T) {
+	cur := graph.Scope{
+		Context:      "dev/ci1",
+		Namespaces:   []string{"app", "infra"},
+		IncludeInfra: true,
+		IncludeCRDs:  false,
+	}
+
+	t.Run("same context adds the namespace and keeps what was already on", func(t *testing.T) {
+		got, ok := discoveryScope(cur, "dev/ci1", true, flags("dev/ci1", "payments", "pods", "api"))
+		if !ok {
+			t.Fatal("want a scope")
+		}
+		// Replacing would turn a two-namespace map into a one-namespace map and
+		// delete the infra layer the user was looking at.
+		if !slices.Contains(got.Namespaces, "app") || !slices.Contains(got.Namespaces, "payments") {
+			t.Fatalf("namespaces = %v, want the union", got.Namespaces)
+		}
+		if !got.IncludeInfra {
+			t.Error("IncludeInfra was on and must stay on")
+		}
+		if got.IncludeCRDs {
+			t.Error("a Pod needs no custom resources")
+		}
+	})
+
+	t.Run("a namespace already in scope is not duplicated", func(t *testing.T) {
+		got, _ := discoveryScope(cur, "dev/ci1", true, flags("dev/ci1", "app", "pods", "api"))
+		if len(got.Namespaces) != len(cur.Namespaces) {
+			t.Fatalf("namespaces = %v, want no duplicate", got.Namespaces)
+		}
+	})
+
+	t.Run("an all-namespaces scope stays all-namespaces", func(t *testing.T) {
+		all := graph.Scope{Context: "dev/ci1"}
+		got, _ := discoveryScope(all, "dev/ci1", true, flags("dev/ci1", "payments", "pods", "api"))
+		if len(got.Namespaces) != 0 {
+			t.Fatalf("namespaces = %v, want empty (already covers everything)", got.Namespaces)
+		}
+	})
+
+	t.Run("a different cluster replaces rather than adds", func(t *testing.T) {
+		got, ok := discoveryScope(cur, "dev/ci1", true, flags("prod/prod1", "payments", "pods", "api"))
+		if !ok {
+			t.Fatal("want a scope")
+		}
+		// Namespace names do not carry across clusters, so a union is meaningless.
+		if !slices.Equal(got.Namespaces, []string{"payments"}) {
+			t.Fatalf("namespaces = %v, want just the target", got.Namespaces)
+		}
+		if got.Context != "prod/prod1" {
+			t.Fatalf("context = %q", got.Context)
+		}
+		if got.IncludeInfra {
+			t.Error("infra is not carried across a cluster switch")
+		}
+	})
+
+	t.Run("cold start discovers just the target", func(t *testing.T) {
+		got, ok := discoveryScope(graph.Scope{}, "", false, flags("dev/ci1", "payments", "pods", "api"))
+		if !ok || !slices.Equal(got.Namespaces, []string{"payments"}) || got.Context != "dev/ci1" {
+			t.Fatalf("got %+v, ok=%v", got, ok)
+		}
+	})
+
+	t.Run("a custom resource asks for its own kind only", func(t *testing.T) {
+		got, _ := discoveryScope(cur, "dev/ci1", true, flags("dev/ci1", "payments", "certificates", "web-tls"))
+		if !got.IncludeCRDs {
+			t.Fatal("an unknown kind must be looked for among custom resources")
+		}
+		if !slices.Equal(got.CRDKinds, []string{"certificates"}) {
+			t.Fatalf("CRDKinds = %v — without this the pass sweeps every CRD", got.CRDKinds)
+		}
+	})
+
+	t.Run("a Flux kind needs no custom-resource sweep", func(t *testing.T) {
+		got, _ := discoveryScope(cur, "dev/ci1", true, flags("dev/ci1", "payments", "kustomizations", "apps"))
+		if got.IncludeCRDs {
+			t.Error("the Flux pass is unconditional — this would cost a sweep for nothing")
+		}
+	})
+
+	t.Run("a node turns on infra, not custom resources", func(t *testing.T) {
+		plain := graph.Scope{Context: "dev/ci1", Namespaces: []string{"app"}}
+		got, _ := discoveryScope(plain, "dev/ci1", true, flags("dev/ci1", "app", "nodes", "ip-10-0-0-1"))
+		if !got.IncludeInfra {
+			t.Error("Nodes come from the infra pass")
+		}
+		if got.IncludeCRDs {
+			t.Error("Nodes are not custom resources")
+		}
+	})
+
+	t.Run("no namespace to scope to means no pass", func(t *testing.T) {
+		if _, ok := discoveryScope(cur, "dev/ci1", true, flags("dev/ci1", "all", "pods", "api")); ok {
+			t.Fatal("must refuse rather than discover every namespace from a keypress")
+		}
+	})
+
+	t.Run("a kind kscope never models means no pass", func(t *testing.T) {
+		if _, ok := discoveryScope(cur, "dev/ci1", true, flags("dev/ci1", "payments", "endpoints", "api")); ok {
+			t.Fatal("discovering cannot make an unmapped kind resolvable")
+		}
+	})
+}
+
+func snapWith(ctx string, nodes ...graph.Node) graph.Snapshot {
+	return graph.Snapshot{
+		Cluster: graph.ClusterMeta{Context: ctx},
+		Scope:   graph.Scope{Context: ctx, Namespaces: []string{"app"}},
+		Nodes:   nodes,
+	}
+}
+
+// focusResult is what App.focus emits, extracted so it can be tested at all:
+// wruntime.EventsEmit calls log.Fatalf on a context without Wails' event
+// plumbing, which would take the test binary with it.
+func TestFocusResult(t *testing.T) {
+	pod := graph.Node{ID: "core/pod/app/api", Kind: "Pod", Name: "api", Namespace: "app"}
+
+	t.Run("a hit resolves and asks for no discovery", func(t *testing.T) {
+		got := focusResult(snapWith("dev/ci1", pod), true, flags("dev/ci1", "app", "pods", "api"))
+		if got.Phase != phaseResolved || got.ID != pod.ID {
+			t.Fatalf("got %+v", got)
+		}
+		if got.Scope != nil {
+			t.Error("a resolved focus must not trigger a pass")
+		}
+	})
+
+	t.Run("a miss carries the scope that would find it", func(t *testing.T) {
+		got := focusResult(snapWith("dev/ci1", pod), true, flags("prod/prod1", "payments", "pods", "web"))
+		if got.Phase != phaseMissing {
+			t.Fatalf("phase = %q", got.Phase)
+		}
+		if got.Scope == nil {
+			t.Fatal("want a scope to discover")
+		}
+		if got.Scope.Context != "prod/prod1" || !slices.Equal(got.Scope.Namespaces, []string{"payments"}) {
+			t.Fatalf("scope = %+v", *got.Scope)
+		}
+	})
+
+	t.Run("reports the raw namespace nowhere", func(t *testing.T) {
+		// k9s sends "all" from its all-namespaces view. The payload used to
+		// carry it verbatim, so the UI said "all/api" — and a frontend acting
+		// on it would discover a namespace literally called "all".
+		got := focusResult(snapWith("dev/ci1", pod), true, flags("dev/ci1", "all", "pods", "ghost"))
+		if got.Namespace == "all" {
+			t.Fatal("the sentinel leaked into the payload")
+		}
+	})
+
+	t.Run("an unmapped kind is refused without a pass", func(t *testing.T) {
+		// A name that resolves to nothing: ResolveNode deliberately ignores the
+		// kind hint when exactly one node carries the name, so a colliding
+		// fixture would resolve to that node instead of reaching this path.
+		got := focusResult(snapWith("dev/ci1", pod), true, flags("dev/ci1", "app", "endpoints", "frontend"))
+		if got.Phase != phaseMissing || got.Scope != nil {
+			t.Fatalf("got %+v", got)
+		}
+		if got.Reason != reasonUnmapped {
+			t.Fatalf("reason = %q, want %q", got.Reason, reasonUnmapped)
+		}
+	})
+
+	t.Run("no namespace to scope to is its own reason", func(t *testing.T) {
+		got := focusResult(snapWith("dev/ci1", pod), true, flags("dev/ci1", "all", "pods", "ghost"))
+		if got.Reason != reasonNoNamespace || got.Scope != nil {
+			t.Fatalf("got %+v", got)
+		}
+	})
+
+	t.Run("no snapshot at all still discovers", func(t *testing.T) {
+		got := focusResult(graph.Snapshot{}, false, flags("dev/ci1", "payments", "pods", "api"))
+		if got.Phase != phaseMissing || got.Scope == nil {
+			t.Fatalf("got %+v — a cold start is the best case for this, not an edge case", got)
+		}
+	})
 }

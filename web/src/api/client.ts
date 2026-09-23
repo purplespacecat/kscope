@@ -35,15 +35,40 @@ export async function getManifest(id: string): Promise<string> {
   return res.text();
 }
 
-export async function refresh(scope: Scope): Promise<Snapshot> {
+export async function refresh(scope: Scope, signal?: AbortSignal): Promise<Snapshot> {
   const res = await fetch("/api/graph/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(scope),
+    // Aborting is safe: the server stores a snapshot only on success, so a
+    // cancelled pass never costs the caller the map they already had.
+    signal,
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`POST /api/graph/refresh: ${res.status} ${text}`);
   }
   return (await res.json()) as Snapshot;
+}
+
+/** Reference the k9s handoff gives us, before we know the node's id. */
+export interface FocusRef {
+  name: string;
+  namespace?: string;
+  kind?: string;
+}
+
+/**
+ * Turn a name (plus optional namespace and kind) into a node id in the current
+ * snapshot. Server-side so the tie-breaking rules live in one place — a
+ * TypeScript copy of graph.ResolveNode would drift from it.
+ */
+export async function resolveFocus(ref: FocusRef): Promise<string | null> {
+  const q = new URLSearchParams({ name: ref.name });
+  if (ref.namespace) q.set("namespace", ref.namespace);
+  if (ref.kind) q.set("kind", ref.kind);
+  const res = await fetch(`/api/focus/resolve?${q}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GET /api/focus/resolve: ${res.status}`);
+  return ((await res.json()) as { id: string }).id;
 }
