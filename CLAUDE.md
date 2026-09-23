@@ -47,6 +47,16 @@
   resource". The policy is `discoveryScope`, deliberately **pure** so it is a table test
   rather than something you learn by pressing a key at a cluster: same cluster adds a
   namespace, a different cluster replaces, unmapped kinds and unknown namespaces refuse.
+  `IncludeInfra`/`IncludeCRDs` come from the focused kind and are **never inherited** from
+  the current scope — inheriting made a hop pay the full CRD sweep (38.6s measured) and drag
+  in an infra layer the keypress never asked for. A namespace is only accepted if it could
+  be one: k9s renders `-` for **every cluster-scoped row** and substitutes it verbatim, which
+  reached a real snapshot as `ns=[gitlab-runner,-]`. Cluster-scoped kinds therefore need
+  their own rule, or dropping `-` turns them into refusals: a **Namespace** row is its own
+  scope (the node only exists in a pass that lists that namespace, and the name is the
+  namespace); a **Node** on the cluster already on screen is one flag (`IncludeInfra`) on
+  the current scope, and on any other cluster is refused, since there is no map to add a
+  layer to and no namespace to start one from.
   `Scope.CRDKinds` narrows a custom-resource pass to the one kind being hunted — CRs are
   listed cluster-wide once per CRD and filtered in-process, so a namespace scope saves
   nothing. Measured on dev/ci1, one namespace: full sweep 36.4s / 5,848 nodes, narrowed

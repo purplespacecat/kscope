@@ -38,7 +38,14 @@ func registerFocusFlags(fs *flag.FlagSet) *focusFlags {
 }
 
 func (f focusFlags) ref() graph.NodeRef {
-	return graph.NodeRef{Namespace: normalizeNamespace(f.namespace), Name: f.name, Kind: f.kind}
+	// A namespace that cannot be one — k9s's "-" placeholder, an unsubstituted
+	// token — is dropped rather than used as a filter. Filtering on it would
+	// match nothing and turn a resolvable resource into a miss.
+	ns := normalizeNamespace(f.namespace)
+	if !isNamespaceName(ns) {
+		ns = ""
+	}
+	return graph.NodeRef{Namespace: ns, Name: f.name, Kind: f.kind}
 }
 
 // normalizeNamespace maps the "every namespace" sentinels a caller might pass
@@ -64,13 +71,30 @@ var nsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 // did not say where to look, and discovering every namespace because a key was
 // pressed is never the right guess.
 func (f focusFlags) targetNamespace() (string, bool) {
-	if ns := normalizeNamespace(f.namespace); ns != "" {
-		return ns, true
+	// A Namespace is its own scope. k9s renders "-" for any cluster-scoped row,
+	// so the namespace flags say nothing here, but the Namespace node only
+	// exists in a pass that lists that namespace — and its name is right there.
+	if graph.KindMatches("Namespace", f.kind) && isNamespaceName(f.name) {
+		return f.name, true
 	}
-	if len(f.rowNamespace) <= 63 && nsLabel.MatchString(f.rowNamespace) {
-		return f.rowNamespace, true
+	// Both candidates get the same check. k9s renders "-" in the NAMESPACE
+	// column for a row that has no namespace and substitutes that verbatim, so
+	// a value that merely LOOKS like a name is not enough: taken at face value
+	// "-" became a namespace of its own, discovered nothing, and could not
+	// contain the resource that was asked for.
+	for _, cand := range []string{normalizeNamespace(f.namespace), f.rowNamespace} {
+		if isNamespaceName(cand) {
+			return cand, true
+		}
 	}
 	return "", false
+}
+
+// isNamespaceName reports whether s could be a namespace at all: a DNS-1123
+// label. This is a filter against k9s's placeholders and unsubstituted tokens,
+// not validation of a name the API server will accept.
+func isNamespaceName(s string) bool {
+	return s != "" && len(s) <= 63 && nsLabel.MatchString(s)
 }
 
 // discoveryScope decides what one handoff miss should discover. Pure — no
@@ -83,11 +107,6 @@ func discoveryScope(cur graph.Scope, curContext string, haveSnapshot bool, f foc
 	if graph.IsUnmappedKind(f.kind) {
 		return graph.Scope{}, false
 	}
-	ns, ok := f.targetNamespace()
-	if !ok {
-		return graph.Scope{}, false
-	}
-
 	needsInfra := graph.IsInfraKind(f.kind)
 	// Anything kscope does not discover by default and is not infra has to be
 	// looked for among custom resources — narrowed to that one kind, or the
@@ -99,6 +118,24 @@ func discoveryScope(cur graph.Scope, curContext string, haveSnapshot bool, f foc
 	}
 
 	sameCluster := haveSnapshot && (f.context == "" || f.context == curContext)
+
+	ns, ok := f.targetNamespace()
+	if !ok {
+		// A Node has no namespace to add, and the infra pass does not read the
+		// namespace list anyway. On the cluster already on screen the whole
+		// decision is one flag. Anywhere else there is no map to add a layer
+		// to, and starting one would mean inventing a namespace or enumerating
+		// the cluster — neither is what a keypress should do.
+		if needsInfra && sameCluster {
+			next := cur
+			next.IncludeInfra = true
+			next.IncludeCRDs = false
+			next.CRDKinds = nil
+			return next, true
+		}
+		return graph.Scope{}, false
+	}
+
 	if !sameCluster {
 		// Namespace names do not carry across clusters, so carrying the old
 		// scope over would be meaningless. Start clean.
@@ -111,18 +148,19 @@ func discoveryScope(cur graph.Scope, curContext string, haveSnapshot bool, f foc
 		}, true
 	}
 
-	// Same cluster: add to what is already on screen rather than replacing it.
-	// Replacing would turn a six-namespace map into a one-namespace map and
-	// drop the infra layer, which is a steep price for looking at one more pod.
+	// Same cluster: add the namespace to what is already on screen rather than
+	// replacing it, so a six-namespace map survives someone looking at one more
+	// pod.
+	//
+	// The FLAGS are not inherited, though. Carrying IncludeCRDs over meant a hop
+	// paid the full custom-resource sweep the narrowing exists to avoid —
+	// measured at 38.6s against dev/ci1 — and carrying IncludeInfra dragged in a
+	// layer this keypress never asked for. What one handoff needs is decided by
+	// the kind being looked at and nothing else.
 	next := cur
-	next.IncludeInfra = cur.IncludeInfra || needsInfra
-	next.IncludeCRDs = cur.IncludeCRDs || needsCRDs
-	next.CRDKinds = nil
-	if next.IncludeCRDs && len(cur.CRDKinds) == 0 && !cur.IncludeCRDs {
-		// Only narrow when the existing scope was not already sweeping
-		// everything; otherwise narrowing would silently drop CRs already shown.
-		next.CRDKinds = crdKinds
-	}
+	next.IncludeInfra = needsInfra
+	next.IncludeCRDs = needsCRDs
+	next.CRDKinds = crdKinds
 	// An empty namespace list already means every namespace.
 	if len(cur.Namespaces) > 0 && !slices.Contains(cur.Namespaces, ns) {
 		next.Namespaces = append(slices.Clone(cur.Namespaces), ns)
