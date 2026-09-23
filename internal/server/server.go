@@ -28,10 +28,12 @@ type Server struct {
 	listContexts   func() ([]graph.KubeContext, error)
 }
 
-// setDiscover swaps the discovery function behind the runner. Test seam: the
-// runner is built in New so callers never have to assemble one.
-func (s *Server) setDiscover(store *graph.Store, discover func(context.Context, graph.Scope) (graph.Snapshot, error)) {
-	s.runner = graph.NewRunnerFunc(store, discover)
+// setDiscover swaps the discovery function behind the runner, keeping the
+// server's own store. Test seam: the runner is built in New, so callers never
+// have to assemble one — and never accidentally point a second Store at the
+// same file.
+func (s *Server) setDiscover(discover func(context.Context, graph.Scope) (graph.Snapshot, error)) {
+	s.runner = graph.NewRunnerFunc(s.store, discover)
 }
 
 func New(store *graph.Store) *Server {

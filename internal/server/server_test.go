@@ -24,7 +24,7 @@ func newTestServer(t *testing.T) (*Server, string) {
 	dir := t.TempDir()
 	store := graph.NewStore(filepath.Join(dir, "latest.json"))
 	srv := New(store)
-	srv.setDiscover(store, fakeDiscover)
+	srv.setDiscover(fakeDiscover)
 	srv.listNamespaces = func(context.Context, string) ([]string, error) {
 		return []string{"default", "kube-system"}, nil
 	}
@@ -226,9 +226,9 @@ func TestNamespaces_NoContextMeansCurrent(t *testing.T) {
 // Scope.Context has to survive the JSON round-trip into discovery, otherwise
 // the picker would silently discover the wrong cluster.
 func TestRefresh_ForwardsContextInScope(t *testing.T) {
-	srv, dir := newTestServer(t)
+	srv, _ := newTestServer(t)
 	var got graph.Scope
-	srv.setDiscover(graph.NewStore(filepath.Join(dir, "latest.json")), func(ctx context.Context, scope graph.Scope) (graph.Snapshot, error) {
+	srv.setDiscover(func(ctx context.Context, scope graph.Scope) (graph.Snapshot, error) {
 		got = scope
 		return fakeDiscover(ctx, scope)
 	})
@@ -270,16 +270,21 @@ func TestNamespaces_Lists(t *testing.T) {
 // both passes run and both write the store, and the client keeps whichever
 // snapshot it happened to receive.
 func TestRefresh_ConcurrentPassIsRefused(t *testing.T) {
-	srv, dir := newTestServer(t)
+	srv, _ := newTestServer(t)
 	release := make(chan struct{})
 	started := make(chan struct{})
-	srv.setDiscover(graph.NewStore(filepath.Join(dir, "latest.json")), func(ctx context.Context, scope graph.Scope) (graph.Snapshot, error) {
+	srv.setDiscover(func(ctx context.Context, scope graph.Scope) (graph.Snapshot, error) {
 		close(started)
 		<-release
 		return fakeDiscover(ctx, scope)
 	})
 
+	// The first pass writes into t.TempDir(). Without waiting for it below, the
+	// test returns while that write is still in flight and cleanup fails with
+	// "directory not empty" — which is how this first failed, in CI only.
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		req := httptest.NewRequest(http.MethodPost, "/api/graph/refresh", strings.NewReader(`{"namespaces":["default"]}`))
 		srv.Mux().ServeHTTP(httptest.NewRecorder(), req)
 	}()
@@ -293,6 +298,7 @@ func TestRefresh_ConcurrentPassIsRefused(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusConflict, rec.Body.String())
 	}
 	close(release)
+	<-done
 }
 
 // After a handoff-triggered pass the frontend has a new snapshot but only a
