@@ -71,6 +71,12 @@ var nsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 // did not say where to look, and discovering every namespace because a key was
 // pressed is never the right guess.
 func (f focusFlags) targetNamespace() (string, bool) {
+	// A Namespace is its own scope. k9s renders "-" for any cluster-scoped row,
+	// so the namespace flags say nothing here, but the Namespace node only
+	// exists in a pass that lists that namespace — and its name is right there.
+	if graph.KindMatches("Namespace", f.kind) && isNamespaceName(f.name) {
+		return f.name, true
+	}
 	// Both candidates get the same check. k9s renders "-" in the NAMESPACE
 	// column for a row that has no namespace and substitutes that verbatim, so
 	// a value that merely LOOKS like a name is not enough: taken at face value
@@ -101,11 +107,6 @@ func discoveryScope(cur graph.Scope, curContext string, haveSnapshot bool, f foc
 	if graph.IsUnmappedKind(f.kind) {
 		return graph.Scope{}, false
 	}
-	ns, ok := f.targetNamespace()
-	if !ok {
-		return graph.Scope{}, false
-	}
-
 	needsInfra := graph.IsInfraKind(f.kind)
 	// Anything kscope does not discover by default and is not infra has to be
 	// looked for among custom resources — narrowed to that one kind, or the
@@ -117,6 +118,24 @@ func discoveryScope(cur graph.Scope, curContext string, haveSnapshot bool, f foc
 	}
 
 	sameCluster := haveSnapshot && (f.context == "" || f.context == curContext)
+
+	ns, ok := f.targetNamespace()
+	if !ok {
+		// A Node has no namespace to add, and the infra pass does not read the
+		// namespace list anyway. On the cluster already on screen the whole
+		// decision is one flag. Anywhere else there is no map to add a layer
+		// to, and starting one would mean inventing a namespace or enumerating
+		// the cluster — neither is what a keypress should do.
+		if needsInfra && sameCluster {
+			next := cur
+			next.IncludeInfra = true
+			next.IncludeCRDs = false
+			next.CRDKinds = nil
+			return next, true
+		}
+		return graph.Scope{}, false
+	}
+
 	if !sameCluster {
 		// Namespace names do not carry across clusters, so carrying the old
 		// scope over would be meaningless. Start clean.

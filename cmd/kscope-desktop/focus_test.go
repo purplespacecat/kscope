@@ -214,13 +214,53 @@ func TestDiscoveryScope(t *testing.T) {
 	})
 
 	t.Run("a node turns on infra, not custom resources", func(t *testing.T) {
+		// What k9s actually sends for a cluster-scoped row: "-" for the
+		// namespace and an unsubstituted column token, because a nodes view
+		// has no NAMESPACE column. There is no namespace to add — the infra
+		// pass does not read the list anyway — so the map keeps its own.
 		plain := graph.Scope{Context: "dev/ci1", Namespaces: []string{"app"}}
-		got, _ := discoveryScope(plain, "dev/ci1", true, flags("dev/ci1", "app", "nodes", "ip-10-0-0-1"))
+		f := focusFlags{context: "dev/ci1", namespace: "-", rowNamespace: "$COL-NAMESPACE", kind: "nodes", name: "ip-10-0-0-1"}
+		got, ok := discoveryScope(plain, "dev/ci1", true, f)
+		if !ok {
+			t.Fatal("a node on the cluster already on screen is one flag away, not a refusal")
+		}
 		if !got.IncludeInfra {
 			t.Error("Nodes come from the infra pass")
 		}
 		if got.IncludeCRDs {
 			t.Error("Nodes are not custom resources")
+		}
+		if !slices.Equal(got.Namespaces, []string{"app"}) {
+			t.Errorf("namespaces = %v, want the current map's, with nothing invented", got.Namespaces)
+		}
+	})
+
+	t.Run("a node on another cluster has no namespace to start a map from", func(t *testing.T) {
+		// Turning infra on is only meaningful for a map that exists. With no
+		// namespace in hand, starting one would mean guessing at a namespace or
+		// enumerating the cluster, and neither is what a keypress should do.
+		f := focusFlags{context: "prod/prod1", namespace: "-", kind: "nodes", name: "ip-10-0-0-1"}
+		if _, ok := discoveryScope(cur, "dev/ci1", true, f); ok {
+			t.Fatal("must refuse rather than invent a scope")
+		}
+		if _, ok := discoveryScope(graph.Scope{}, "", false, f); ok {
+			t.Fatal("cold start: same")
+		}
+	})
+
+	t.Run("a namespace row discovers that namespace", func(t *testing.T) {
+		// The Namespace node only exists in a pass that lists that namespace,
+		// and k9s sends "-" for its namespace column, so the name is the scope.
+		f := focusFlags{context: "dev/ci1", namespace: "-", rowNamespace: "$COL-NAMESPACE", kind: "namespaces", name: "payments"}
+		got, ok := discoveryScope(cur, "dev/ci1", true, f)
+		if !ok {
+			t.Fatal("want a scope")
+		}
+		if !slices.Contains(got.Namespaces, "payments") || !slices.Contains(got.Namespaces, "app") {
+			t.Fatalf("namespaces = %v, want the union with the namespace itself", got.Namespaces)
+		}
+		if got.IncludeInfra || got.IncludeCRDs {
+			t.Errorf("a Namespace is a built-in kind: %+v", got)
 		}
 	})
 
@@ -378,5 +418,56 @@ func TestRef_IgnoresANamespaceThatCannotBeOne(t *testing.T) {
 	}
 	if got := (focusFlags{namespace: "payments", name: "api"}).ref(); got.Namespace != "payments" {
 		t.Fatalf("a real namespace must still filter: %q", got.Namespace)
+	}
+}
+
+// A Namespace row is the case the "-" bug was reported from: k9s renders "-"
+// for a cluster-scoped row, so the namespace flag says nothing, but the name
+// IS a namespace, and the pass that would find the Namespace node is the one
+// that lists it.
+func TestTargetNamespace_ANamespaceIsItsOwnScope(t *testing.T) {
+	f := focusFlags{namespace: "-", rowNamespace: "$COL-NAMESPACE", kind: "namespaces", name: "payments"}
+	if got, ok := f.targetNamespace(); !ok || got != "payments" {
+		t.Fatalf("targetNamespace() = (%q, %v), want (payments, true)", got, ok)
+	}
+	// The Kind form must work too; a hand-typed --focus-kind is usually that.
+	f.kind = "Namespace"
+	if got, ok := f.targetNamespace(); !ok || got != "payments" {
+		t.Fatalf("targetNamespace() = (%q, %v), want (payments, true)", got, ok)
+	}
+	// But only for a Namespace: for anything else the name is not a place.
+	f.kind = "pods"
+	if _, ok := f.targetNamespace(); ok {
+		t.Fatal("a pod's name is not a namespace")
+	}
+}
+
+// End to end through the shipped plugin's argv, as it arrives for a row in
+// k9s's namespaces view.
+func TestFocusResult_NamespaceRowFromK9s(t *testing.T) {
+	args := []string{
+		"--focus-context", "dev/ci1",
+		"--focus-namespace", "-",
+		"--focus-row-namespace", "$COL-NAMESPACE",
+		"--focus-kind", "namespaces",
+		"--focus-name", "payments",
+	}
+	f, err := parseFocusArgs(args)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	pod := graph.Node{ID: "core/pod/app/api", Kind: "Pod", Name: "api", Namespace: "app"}
+	got := focusResult(snapWith("dev/ci1", pod), true, f)
+	if got.Phase != phaseMissing || got.Scope == nil {
+		t.Fatalf("got %+v, want a pass (reason %q)", got, got.Reason)
+	}
+	if !slices.Equal(got.Scope.Namespaces, []string{"app", "payments"}) {
+		t.Fatalf("namespaces = %v, want the map plus the namespace itself", got.Scope.Namespaces)
+	}
+	if slices.Contains(got.Scope.Namespaces, "-") {
+		t.Fatal("the placeholder leaked into the scope")
+	}
+	if got.Namespace != "" {
+		t.Fatalf("payload namespace = %q, want empty", got.Namespace)
 	}
 }

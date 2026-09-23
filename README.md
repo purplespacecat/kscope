@@ -117,6 +117,10 @@ doing and what that replaces, with a Cancel:
 - **a different cluster** — the snapshot is replaced, since namespace names
   don't carry across clusters. A "← Back to …" button restores the scope that
   produced the previous map.
+- **a cluster-scoped row** — k9s has no namespace to send, so a Namespace row
+  maps that namespace, and a Node row adds the infra layer to the cluster
+  already on screen. A Node on a cluster kscope has no map of is refused: map
+  it first.
 - **a custom resource** — discovery is narrowed to that one CRD. Sweeping every
   CRD on a Crossplane-sized cluster takes ~90s; asking for one takes seconds.
 - **a kind kscope doesn't model** (Endpoints, Roles, HPAs) or a request that

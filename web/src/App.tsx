@@ -200,7 +200,7 @@ export default function App() {
         setNotice(
           req.reason === "unmapped"
             ? `kscope does not map ${req.kind ?? "that kind"} — there is nothing to jump to.`
-            : `${what}: k9s didn't say which namespace. Press Ctrl-T from a namespaced view.`,
+            : `${what}: no namespace to scope a pass to. Map this cluster first, or press Ctrl-T from a namespaced view.`,
         );
         return;
       }
