@@ -110,7 +110,10 @@ discovers the scope that would contain it and lands on it, showing what it is
 doing and what that replaces, with a Cancel:
 
 - **same cluster, a namespace you hadn't scoped in** — the namespace is *added*
-  to the current scope, so the map you were looking at survives.
+  to the current scope, so the map you were looking at survives. The infra layer
+  and custom resources are decided by the kind you pressed on, not inherited, so
+  a Pod hop stays a few seconds; a "← Back to …" button restores the previous
+  scope if that turned a layer off.
 - **a different cluster** — the snapshot is replaced, since namespace names
   don't carry across clusters. A "← Back to …" button restores the scope that
   produced the previous map.

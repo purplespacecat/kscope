@@ -253,3 +253,47 @@ describe("getting back after a cross-cluster hop", () => {
     expect(screen.queryByRole("button", { name: /back to/i })).toBeNull();
   });
 });
+
+describe("getting back after a same-cluster hop that dropped flags", () => {
+  it("offers the way back when the pass turned something off", async () => {
+    const emit = stubDesktopRuntime();
+    // The map on screen has infra and custom resources; a Pod hop needs
+    // neither, so the pass drops both and the previous scope is worth keeping.
+    const heavy: Snapshot = {
+      ...dev,
+      scope: { context: "dev/ci1", namespaces: ["gitlab-runner"], includeInfra: true, includeCRDs: true },
+    };
+    vi.mocked(api.getLatest).mockResolvedValue(heavy);
+    vi.mocked(api.refresh).mockResolvedValue({
+      ...dev,
+      scope: { context: "dev/ci1", namespaces: ["gitlab-runner", "payments"] },
+    });
+    renderApp();
+    await screen.findByTestId("canvas");
+
+    emit(miss({ context: "dev/ci1", scope: { context: "dev/ci1", namespaces: ["gitlab-runner", "payments"] } }));
+    await waitFor(() => expect(api.resolveFocus).toHaveBeenCalled());
+
+    const back = await screen.findByRole("button", { name: /back to/i });
+    await userEvent.click(back);
+    await waitFor(() => expect(api.refresh).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.refresh).mock.calls[1][0]).toEqual(heavy.scope);
+  });
+
+  it("stays quiet when the hop cost nothing", async () => {
+    const emit = stubDesktopRuntime();
+    const plain: Snapshot = { ...dev, scope: { context: "dev/ci1", namespaces: ["app"] } };
+    vi.mocked(api.getLatest).mockResolvedValue(plain);
+    vi.mocked(api.refresh).mockResolvedValue({
+      ...dev,
+      scope: { context: "dev/ci1", namespaces: ["app", "payments"] },
+    });
+    renderApp();
+    await screen.findByTestId("canvas");
+
+    emit(miss({ context: "dev/ci1", scope: { context: "dev/ci1", namespaces: ["app", "payments"] } }));
+    await waitFor(() => expect(api.resolveFocus).toHaveBeenCalled());
+
+    expect(screen.queryByRole("button", { name: /back to/i })).toBeNull();
+  });
+});

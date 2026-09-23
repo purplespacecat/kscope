@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/purplespacecat/kscope/internal/graph"
@@ -139,21 +140,20 @@ func TestDiscoveryScope(t *testing.T) {
 		IncludeCRDs:  false,
 	}
 
-	t.Run("same context adds the namespace and keeps what was already on", func(t *testing.T) {
+	t.Run("same context adds the namespace, and decides flags from the kind", func(t *testing.T) {
 		got, ok := discoveryScope(cur, "dev/ci1", true, flags("dev/ci1", "payments", "pods", "api"))
 		if !ok {
 			t.Fatal("want a scope")
 		}
-		// Replacing would turn a two-namespace map into a one-namespace map and
-		// delete the infra layer the user was looking at.
+		// Replacing the namespaces would turn a two-namespace map into a
+		// one-namespace map, which is a steep price for looking at one pod.
 		if !slices.Contains(got.Namespaces, "app") || !slices.Contains(got.Namespaces, "payments") {
 			t.Fatalf("namespaces = %v, want the union", got.Namespaces)
 		}
-		if !got.IncludeInfra {
-			t.Error("IncludeInfra was on and must stay on")
-		}
-		if got.IncludeCRDs {
-			t.Error("a Pod needs no custom resources")
+		// The flags are NOT inherited: a Pod needs neither infra nor custom
+		// resources, whatever the current map happens to have on.
+		if got.IncludeInfra || got.IncludeCRDs {
+			t.Errorf("flags came from the current scope, not the kind: %+v", got)
 		}
 	})
 
@@ -310,4 +310,73 @@ func TestFocusResult(t *testing.T) {
 			t.Fatalf("got %+v — a cold start is the best case for this, not an edge case", got)
 		}
 	})
+}
+
+// k9s renders "-" in the NAMESPACE column for a row that has no namespace, and
+// substitutes that into $NAMESPACE verbatim. Taken at face value it becomes a
+// namespace literally called "-", which discovers nothing and cannot contain
+// the resource. Observed in the wild as scope ns=[gitlab-runner,-].
+func TestTargetNamespace_RejectsNonNamespaces(t *testing.T) {
+	for _, ns := range []string{"-", "n/a", "<none>", "ALL", "has space", "x" + strings.Repeat("y", 63)} {
+		if got, ok := (focusFlags{namespace: ns, name: "api"}).targetNamespace(); ok {
+			t.Errorf("targetNamespace(%q) = (%q, true), want refused", ns, got)
+		}
+	}
+	// And the row hint is used when the primary is one of those.
+	f := focusFlags{namespace: "-", rowNamespace: "payments", name: "api"}
+	if got, ok := f.targetNamespace(); !ok || got != "payments" {
+		t.Fatalf("targetNamespace() = (%q, %v), want (payments, true)", got, ok)
+	}
+}
+
+// A handoff pass is decided by the kind being looked at, never inherited from
+// whatever the current map happens to have on. Inheriting made a hop cost the
+// full custom-resource sweep (measured 38.6s on a real cluster) and dragged in
+// an infra layer the user did not ask this keypress for.
+func TestDiscoveryScope_DoesNotInheritFlags(t *testing.T) {
+	heavy := graph.Scope{
+		Context:      "dev/ci1",
+		Namespaces:   []string{"gitlab-runner"},
+		IncludeInfra: true,
+		IncludeCRDs:  true,
+	}
+
+	got, ok := discoveryScope(heavy, "dev/ci1", true, flags("dev/ci1", "payments", "pods", "api"))
+	if !ok {
+		t.Fatal("want a scope")
+	}
+	if got.IncludeInfra {
+		t.Error("IncludeInfra must come from the kind, not from the current map")
+	}
+	if got.IncludeCRDs {
+		t.Error("IncludeCRDs must come from the kind, not from the current map")
+	}
+	// Namespaces are still additive: that part protects the map and nobody
+	// complained about it.
+	if !slices.Contains(got.Namespaces, "gitlab-runner") || !slices.Contains(got.Namespaces, "payments") {
+		t.Fatalf("namespaces = %v, want the union", got.Namespaces)
+	}
+}
+
+// The narrowing must survive a scope that already had custom resources on —
+// that was the case where it silently did not apply, and the whole cost saving
+// with it.
+func TestDiscoveryScope_NarrowsEvenWhenCRDsWereAlreadyOn(t *testing.T) {
+	heavy := graph.Scope{Context: "dev/ci1", Namespaces: []string{"app"}, IncludeCRDs: true}
+	got, _ := discoveryScope(heavy, "dev/ci1", true, flags("dev/ci1", "app", "certificates", "web-tls"))
+	if !slices.Equal(got.CRDKinds, []string{"certificates"}) {
+		t.Fatalf("CRDKinds = %v, want the one kind being hunted", got.CRDKinds)
+	}
+}
+
+// A "-" namespace must not become a resolution filter either: filtering on it
+// matches nothing, so a resource that IS in the snapshot reads as a miss and
+// triggers a pointless discovery.
+func TestRef_IgnoresANamespaceThatCannotBeOne(t *testing.T) {
+	if got := (focusFlags{namespace: "-", name: "api", kind: "pods"}).ref(); got.Namespace != "" {
+		t.Fatalf("ref().Namespace = %q, want empty", got.Namespace)
+	}
+	if got := (focusFlags{namespace: "payments", name: "api"}).ref(); got.Namespace != "payments" {
+		t.Fatalf("a real namespace must still filter: %q", got.Namespace)
+	}
 }

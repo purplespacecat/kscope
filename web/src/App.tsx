@@ -210,10 +210,17 @@ export default function App() {
 
       const scope = req.scope;
       const from = snapshot?.cluster?.context ?? "";
-      // Only a different cluster loses you anything: a same-cluster hop adds a
-      // namespace to the scope rather than replacing it.
+      // What the pass costs. A different cluster replaces the map outright; a
+      // same-cluster hop keeps the namespaces but decides infra and custom
+      // resources from the kind alone, so it can still switch off a layer that
+      // was on. Either way the previous scope is worth keeping so it can be
+      // restored in one click.
+      const crossesCluster = !!(scope.context && from && scope.context !== from);
+      const dropsLayer =
+        (!!snapshot?.scope.includeInfra && !scope.includeInfra) ||
+        (!!snapshot?.scope.includeCRDs && !scope.includeCRDs);
       const losing =
-        from && scope.context && scope.context !== from && snapshot
+        snapshot && from && (crossesCluster || dropsLayer)
           ? { scope: snapshot.scope, context: from }
           : null;
       const ctrl = new AbortController();
