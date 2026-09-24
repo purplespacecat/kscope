@@ -47,6 +47,10 @@
   resource". The policy is `discoveryScope`, deliberately **pure** so it is a table test
   rather than something you learn by pressing a key at a cluster: same cluster adds a
   namespace, a different cluster replaces, unmapped kinds and unknown namespaces refuse.
+  A hit is only a hit **on the same cluster**: `focusResult` does not resolve against a
+  snapshot whose context differs from the request's, because names like `crossplane-system`
+  exist on every cluster and resolving first made a cross-cluster handoff land on the wrong
+  map with no pass at all.
   `IncludeInfra`/`IncludeCRDs` come from the focused kind and are **never inherited** from
   the current scope — inheriting made a hop pay the full CRD sweep (38.6s measured) and drag
   in an infra layer the keypress never asked for. A namespace is only accepted if it could
